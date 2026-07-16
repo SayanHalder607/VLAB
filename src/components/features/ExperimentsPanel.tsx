@@ -64,15 +64,16 @@ export const ExperimentsPanel: React.FC<ExperimentsPanelProps> = ({
               key={exp.id}
               onClick={() => onSelectExperiment(exp.id)}
               className={`snitch-list-item ${selectedId === exp.id ? 'active' : ''}`}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', textAlign: 'left' }}
               role="button"
               tabIndex={0}
               onKeyDown={(e) => e.key === 'Enter' && onSelectExperiment(exp.id)}
             >
-              <div>
-                <h3 className="snitch-text-body" style={{ fontWeight: 'bold', color: selectedId === exp.id ? 'var(--snitch-primary)' : 'inherit' }}>
+              <div className="snitch-flex-col" style={{ flex: 1, minWidth: 0, alignItems: 'flex-start', textAlign: 'left' }}>
+                <h3 className="snitch-text-body" style={{ fontWeight: 'bold', color: selectedId === exp.id ? 'var(--snitch-primary)' : 'var(--snitch-text-main)', textAlign: 'left', width: '100%' }}>
                   {exp.title}
                 </h3>
-                <div className="snitch-flex snitch-items-center snitch-gap-sm" style={{ marginTop: '0.25rem' }}>
+                <div className="snitch-flex snitch-items-center snitch-gap-sm" style={{ marginTop: '0.25rem', justifyContent: 'flex-start', width: '100%' }}>
                   <span style={{ fontSize: '10px', textTransform: 'uppercase', fontWeight: 'bold', color: 'var(--snitch-text-muted)' }}>
                     {exp.category}
                   </span>
@@ -83,7 +84,7 @@ export const ExperimentsPanel: React.FC<ExperimentsPanelProps> = ({
                 </div>
               </div>
               
-              <ChevronRight style={{ width: '16px', height: '16px', color: selectedId === exp.id ? 'var(--snitch-primary)' : 'var(--snitch-border)' }} />
+              <ChevronRight style={{ width: '16px', height: '16px', flexShrink: 0, color: selectedId === exp.id ? 'var(--snitch-primary)' : 'var(--snitch-border)', marginLeft: '1rem' }} />
             </div>
           ))
         )}

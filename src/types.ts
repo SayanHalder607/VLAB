@@ -48,6 +48,7 @@ export interface Experiment {
   defaultWires: WireConnection[];
   tips?: string[];
   buildSteps?: string[];
+  difficulty?: 'Beginner' | 'Intermediate' | 'Advanced';
 }
 
 export interface SimulationState {

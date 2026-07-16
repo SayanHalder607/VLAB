@@ -15,40 +15,36 @@ export interface ComponentMetadata {
 const generateBreadboardPins = (): PinDefinition[] => {
   const pins: PinDefinition[] = [];
   
-  // Power rails: Top (+ and -) and Bottom (+ and -)
+  // Power rails: Top (- and +) and Bottom (+ and -)
   // 30 columns for power rails, spaced out
-  const colSpacing = 16.5;
+  const colSpacing = 15;
   const startX = 50;
   
-  // Top Rails (Y: 20 and Y: 35)
   for (let i = 0; i < 30; i++) {
-    // Top negative rail (Black / Ground)
     pins.push({
       id: `rail_top_neg_${i}`,
       name: `-`,
       x: startX + i * colSpacing,
-      y: 18,
+      y: 15,
       type: 'gnd',
     });
-    // Top positive rail (Red / Power)
     pins.push({
       id: `rail_top_pos_${i}`,
       name: `+`,
       x: startX + i * colSpacing,
-      y: 32,
+      y: 30,
       type: 'power',
     });
   }
 
-  // 30 vertical columns of 5 pins for both top (A-E) and bottom (F-J) terminal strips
-  const terminalTopY = 58;
-  const rowSpacing = 14;
-  const terminalBottomY = 142; // bridge in center is ~26px
+  const terminalTopY = 60;
+  const rowSpacing = 15;
+  const terminalBottomY = 165;
 
   for (let col = 0; col < 30; col++) {
     const cx = startX + col * colSpacing;
-    // Upper terminal strip: Rows A, B, C, D, E
-    const upperRows = ['E', 'D', 'C', 'B', 'A'];
+    // Upper terminal strip: Rows f, g, h, i, j
+    const upperRows = ['f', 'g', 'h', 'i', 'j'];
     upperRows.forEach((row, rowIndex) => {
       pins.push({
         id: `hole_${row}_${col + 1}`,
@@ -59,8 +55,8 @@ const generateBreadboardPins = (): PinDefinition[] => {
       });
     });
 
-    // Lower terminal strip: Rows F, G, H, I, J
-    const lowerRows = ['F', 'G', 'H', 'I', 'J'];
+    // Lower terminal strip: Rows a, b, c, d, e
+    const lowerRows = ['a', 'b', 'c', 'd', 'e'];
     lowerRows.forEach((row, rowIndex) => {
       pins.push({
         id: `hole_${row}_${col + 1}`,
@@ -72,10 +68,9 @@ const generateBreadboardPins = (): PinDefinition[] => {
     });
   }
 
-  // Bottom Rails (Y: 218 and Y: 232)
-  const bottomRailY = 224;
+  // Bottom Rails (Y: 255 and Y: 270)
+  const bottomRailY = 255;
   for (let i = 0; i < 30; i++) {
-    // Bottom negative rail (Black / Ground)
     pins.push({
       id: `rail_bot_neg_${i}`,
       name: `-`,
@@ -83,12 +78,11 @@ const generateBreadboardPins = (): PinDefinition[] => {
       y: bottomRailY,
       type: 'gnd',
     });
-    // Bottom positive rail (Red / Power)
     pins.push({
       id: `rail_bot_pos_${i}`,
       name: `+`,
       x: startX + i * colSpacing,
-      y: bottomRailY + 14,
+      y: bottomRailY + 15,
       type: 'power',
     });
   }
@@ -196,7 +190,7 @@ export const COMPONENT_DEFINITIONS: Record<string, ComponentMetadata> = {
     name: 'Half Breadboard',
     category: 'prototyping',
     width: 550,
-    height: 256,
+    height: 285,
     description: 'A construction base for prototyping electronics with connected terminal holes.',
     defaultProperties: {},
     pins: generateBreadboardPins(),
@@ -205,13 +199,13 @@ export const COMPONENT_DEFINITIONS: Record<string, ComponentMetadata> = {
     type: 'led',
     name: 'LED',
     category: 'outputs',
-    width: 40,
-    height: 50,
+    width: 30,
+    height: 60,
     description: 'A light-emitting diode. Emits light when activated by voltage.',
     defaultProperties: { color: 'red' },
     pins: [
-      { id: 'anode', name: 'Anode (+)', x: 15, y: 45, type: 'passive' },
-      { id: 'cathode', name: 'Cathode (-)', x: 25, y: 45, type: 'gnd' },
+      { id: 'anode', name: 'Anode (+)', x: 5, y: 45, type: 'passive' },
+      { id: 'cathode', name: 'Cathode (-)', x: 20, y: 45, type: 'gnd' },
     ],
   },
   resistor: {
@@ -219,27 +213,40 @@ export const COMPONENT_DEFINITIONS: Record<string, ComponentMetadata> = {
     name: 'Resistor',
     category: 'passive',
     width: 60,
-    height: 20,
-    description: 'Restricts the flow of electrical current. Default value is 220Ω.',
-    defaultProperties: { resistance: 220 },
+    height: 15,
+    description: 'Restricts the flow of electrical current.',
+    defaultProperties: { resistance: 220, unit: 'Ω', color: 'bg-yellow-200' },
     pins: [
-      { id: 'pin1', name: 'Terminal 1', x: 5, y: 10, type: 'passive' },
-      { id: 'pin2', name: 'Terminal 2', x: 55, y: 10, type: 'passive' },
+      { id: 'p1', name: 'Terminal 1', x: 0, y: 7.5, type: 'passive' },
+      { id: 'p2', name: 'Terminal 2', x: 60, y: 7.5, type: 'passive' },
+    ],
+  },
+  capacitor: {
+    type: 'capacitor',
+    name: 'Ceramic Capacitor',
+    category: 'passive',
+    width: 15,
+    height: 15,
+    description: 'Stores electrical energy in an electric field.',
+    defaultProperties: { capacitance: 104, unit: 'nF' },
+    pins: [
+      { id: 'p1', name: 'Terminal 1', x: 0, y: 7.5, type: 'passive' },
+      { id: 'p2', name: 'Terminal 2', x: 15, y: 7.5, type: 'passive' },
     ],
   },
   push_button: {
     type: 'push_button',
     name: 'Push Button',
     category: 'passive',
-    width: 40,
-    height: 40,
+    width: 45,
+    height: 45,
     description: 'A tactile switch that closes a circuit when pressed.',
     defaultProperties: {},
     pins: [
-      { id: 'pin1a', name: 'Pin 1A', x: 10, y: 10, type: 'passive' },
-      { id: 'pin1b', name: 'Pin 1B', x: 30, y: 10, type: 'passive' },
-      { id: 'pin2a', name: 'Pin 2A', x: 10, y: 30, type: 'passive' },
-      { id: 'pin2b', name: 'Pin 2B', x: 30, y: 30, type: 'passive' },
+      { id: 'pin1a', name: 'Pin 1A', x: 5, y: 0, type: 'passive' },
+      { id: 'pin1b', name: 'Pin 1B', x: 35, y: 0, type: 'passive' },
+      { id: 'pin2a', name: 'Pin 2A', x: 5, y: 30, type: 'passive' },
+      { id: 'pin2b', name: 'Pin 2B', x: 35, y: 30, type: 'passive' },
     ],
   },
   buzzer: {
@@ -251,98 +258,98 @@ export const COMPONENT_DEFINITIONS: Record<string, ComponentMetadata> = {
     description: 'An electronic buzzer that produces sound when energized.',
     defaultProperties: {},
     pins: [
-      { id: 'positive', name: 'Pos (+)', x: 20, y: 50, type: 'passive' },
-      { id: 'negative', name: 'Neg (-)', x: 40, y: 50, type: 'gnd' },
+      { id: 'positive', name: 'Pos (+)', x: 20, y: 45, type: 'passive' },
+      { id: 'negative', name: 'Neg (-)', x: 50, y: 45, type: 'gnd' },
     ],
   },
   dht11: {
     type: 'dht11',
     name: 'DHT11 Temp/Humidity Sensor',
     category: 'sensors',
-    width: 60,
-    height: 80,
+    width: 45,
+    height: 90,
     description: 'Digital sensor measuring ambient air temperature and humidity.',
     defaultProperties: { temperature: 24, humidity: 45 },
     pins: [
-      { id: 'vcc', name: 'VCC', x: 15, y: 75, type: 'power' },
-      { id: 'data', name: 'DATA', x: 30, y: 75, type: 'signal' },
-      { id: 'gnd', name: 'GND', x: 45, y: 75, type: 'gnd' },
+      { id: 'vcc', name: 'VCC', x: 5, y: 75, type: 'power' },
+      { id: 'data', name: 'DATA', x: 20, y: 75, type: 'signal' },
+      { id: 'gnd', name: 'GND', x: 35, y: 75, type: 'gnd' },
     ],
   },
   hc_sr04: {
     type: 'hc_sr04',
     name: 'HC-SR04 Ultrasonic Distance Sensor',
     category: 'sensors',
-    width: 90,
-    height: 50,
+    width: 75,
+    height: 60,
     description: 'Ultrasonic sensor using sonar to determine distance to an object.',
     defaultProperties: { distance: 50 },
     pins: [
-      { id: 'vcc', name: 'VCC', x: 30, y: 45, type: 'power' },
-      { id: 'trig', name: 'TRIG', x: 40, y: 45, type: 'signal' },
+      { id: 'vcc', name: 'VCC', x: 20, y: 45, type: 'power' },
+      { id: 'trig', name: 'TRIG', x: 35, y: 45, type: 'signal' },
       { id: 'echo', name: 'ECHO', x: 50, y: 45, type: 'signal' },
-      { id: 'gnd', name: 'GND', x: 60, y: 45, type: 'gnd' },
+      { id: 'gnd', name: 'GND', x: 65, y: 45, type: 'gnd' },
     ],
   },
   pir_sensor: {
     type: 'pir_sensor',
     name: 'PIR Motion Sensor',
     category: 'sensors',
-    width: 70,
-    height: 70,
+    width: 60,
+    height: 75,
     description: 'Passive Infrared sensor that detects motion of warm bodies.',
     defaultProperties: { motion: false },
     pins: [
-      { id: 'vcc', name: 'VCC', x: 20, y: 65, type: 'power' },
-      { id: 'out', name: 'OUT', x: 35, y: 65, type: 'signal' },
-      { id: 'gnd', name: 'GND', x: 50, y: 65, type: 'gnd' },
+      { id: 'vcc', name: 'VCC', x: 5, y: 60, type: 'power' },
+      { id: 'out', name: 'OUT', x: 20, y: 60, type: 'signal' },
+      { id: 'gnd', name: 'GND', x: 35, y: 60, type: 'gnd' },
     ],
   },
   ds18b20: {
     type: 'ds18b20',
     name: 'DS18B20 Temp Probe',
     category: 'sensors',
-    width: 40,
-    height: 50,
+    width: 45,
+    height: 60,
     description: '1-Wire programmable digital temperature sensor.',
     defaultProperties: { temperature: 25 },
     pins: [
-      { id: 'gnd', name: 'GND', x: 10, y: 45, type: 'gnd' },
+      { id: 'gnd', name: 'GND', x: 5, y: 45, type: 'gnd' },
       { id: 'dq', name: 'DQ (Data)', x: 20, y: 45, type: 'signal' },
-      { id: 'vcc', name: 'VDD (VCC)', x: 30, y: 45, type: 'power' },
+      { id: 'vcc', name: 'VDD (VCC)', x: 35, y: 45, type: 'power' },
     ],
   },
   yf_s201: {
     type: 'yf_s201',
     name: 'YF-S201 Water Flow Sensor',
     category: 'sensors',
-    width: 70,
-    height: 70,
+    width: 60,
+    height: 75,
     description: 'Flow meter sensor that outputs frequency pulse proportional to flow rate.',
     defaultProperties: { flowRate: 5.0 }, // L/min
     pins: [
-      { id: 'vcc', name: 'VCC (Red)', x: 20, y: 65, type: 'power' },
-      { id: 'out', name: 'OUT (Yellow)', x: 35, y: 65, type: 'signal' },
-      { id: 'gnd', name: 'GND (Black)', x: 50, y: 65, type: 'gnd' },
+      { id: 'vcc', name: 'VCC (Red)', x: 5, y: 60, type: 'power' },
+      { id: 'out', name: 'OUT (Yellow)', x: 20, y: 60, type: 'signal' },
+      { id: 'gnd', name: 'GND (Black)', x: 35, y: 60, type: 'gnd' },
     ],
   },
   relay: {
     type: 'relay',
     name: '5V Relay Module',
     category: 'outputs',
-    width: 60,
-    height: 70,
+    width: 45,
+    height: 75,
     description: 'Electrically operated switch. Allows control of high-voltage devices.',
     defaultProperties: { state: false },
     pins: [
       // Control pins
-      { id: 'vcc', name: 'VCC', x: 15, y: 65, type: 'power' },
-      { id: 'gnd', name: 'GND', x: 30, y: 65, type: 'gnd' },
-      { id: 'in', name: 'IN', x: 45, y: 65, type: 'signal' },
+      { id: 'vcc', name: 'VCC', x: 5, y: 60, type: 'power' },
+      { id: 'gnd', name: 'GND', x: 20, y: 60, type: 'gnd' },
+      { id: 'in', name: 'IN', x: 35, y: 60, type: 'signal' },
       // Terminal pins
-      { id: 'no', name: 'NO', x: 15, y: 5, type: 'passive' },
-      { id: 'com', name: 'COM', x: 30, y: 5, type: 'passive' },
-      { id: 'nc', name: 'NC', x: 45, y: 5, type: 'passive' },
+      { id: 'no', name: 'NO', x: 5, y: 0, type: 'passive' },
+      { id: 'com', name: 'COM', x: 20, y: 0, type: 'passive' },
+      { id: 'nc', name: 'NC', x: 35, y: 0, type: 'passive' },
     ],
   },
   l298n: {
@@ -432,41 +439,28 @@ export const COMPONENT_DEFINITIONS: Record<string, ComponentMetadata> = {
     type: 'potentiometer',
     name: 'Potentiometer',
     category: 'passive',
-    width: 50,
-    height: 50,
+    width: 45,
+    height: 60,
     description: 'A type of resistor whose resistance changes at the turn of a knob.',
     defaultProperties: { resistance: 250000, value: 0 },
     pins: [
-      { id: 'pin1', name: 'Terminal 1', x: 10, y: 42, type: 'passive' },
-      { id: 'wiper', name: 'Wiper', x: 25, y: 42, type: 'passive' },
-      { id: 'pin2', name: 'Terminal 2', x: 40, y: 42, type: 'passive' },
-    ],
-  },
-  capacitor: {
-    type: 'capacitor',
-    name: 'Capacitor',
-    category: 'passive',
-    width: 30,
-    height: 40,
-    description: 'Stores and releases electrical energy in a circuit.',
-    defaultProperties: { capacitance: 1e-7 },
-    pins: [
-      { id: 'pin1', name: 'Terminal 1', x: 10, y: 35, type: 'passive' },
-      { id: 'pin2', name: 'Terminal 2', x: 20, y: 35, type: 'passive' },
+      { id: 'pin1', name: 'Terminal 1', x: 5, y: 45, type: 'passive' },
+      { id: 'wiper', name: 'Wiper', x: 20, y: 45, type: 'passive' },
+      { id: 'pin2', name: 'Terminal 2', x: 35, y: 45, type: 'passive' },
     ],
   },
   slide_switch: {
     type: 'slide_switch',
     name: 'Slideswitch',
     category: 'passive',
-    width: 50,
-    height: 30,
+    width: 45,
+    height: 45,
     description: 'A switch with two positions: open or closed.',
     defaultProperties: { position: 0 },
     pins: [
-      { id: 'pin1', name: 'Terminal 1', x: 12, y: 22, type: 'passive' },
-      { id: 'common', name: 'Common', x: 25, y: 22, type: 'passive' },
-      { id: 'pin2', name: 'Terminal 2', x: 38, y: 22, type: 'passive' },
+      { id: 'pin1', name: 'Terminal 1', x: 5, y: 15, type: 'passive' },
+      { id: 'common', name: 'Common', x: 20, y: 15, type: 'passive' },
+      { id: 'pin2', name: 'Terminal 2', x: 35, y: 15, type: 'passive' },
     ],
   },
   battery_9v: {
@@ -755,13 +749,13 @@ export const COMPONENT_DEFINITIONS: Record<string, ComponentMetadata> = {
     type: 'capacitor_ceramic',
     name: 'Ceramic Capacitor',
     category: 'passive',
-    width: 40,
+    width: 30,
     height: 20,
     description: 'A non-polarized ceramic capacitor to store electrical charge.',
     defaultProperties: { capacitance: '0.1uF' },
     pins: [
       { id: 'pin1', name: 'Terminal 1', x: 5, y: 10, type: 'passive' },
-      { id: 'pin2', name: 'Terminal 2', x: 35, y: 10, type: 'passive' },
+      { id: 'pin2', name: 'Terminal 2', x: 20, y: 10, type: 'passive' },
     ],
   },
   inductor: {
@@ -823,18 +817,18 @@ export const COMPONENT_DEFINITIONS: Record<string, ComponentMetadata> = {
     name: '4-Position DIP Switch',
     category: 'passive',
     width: 60,
-    height: 40,
+    height: 60,
     description: 'A set of manual electric switches packaged in a dual in-line package.',
     defaultProperties: { state1: false, state2: false, state3: false, state4: false },
     pins: [
-      { id: '1a', name: '1A', x: 10, y: 5, type: 'passive' },
-      { id: '1b', name: '1B', x: 10, y: 35, type: 'passive' },
-      { id: '2a', name: '2A', x: 25, y: 5, type: 'passive' },
-      { id: '2b', name: '2B', x: 25, y: 35, type: 'passive' },
-      { id: '3a', name: '3A', x: 40, y: 5, type: 'passive' },
-      { id: '3b', name: '3B', x: 40, y: 35, type: 'passive' },
-      { id: '4a', name: '4A', x: 55, y: 5, type: 'passive' },
-      { id: '4b', name: '4B', x: 55, y: 35, type: 'passive' },
+      { id: '1a', name: '1A', x: 5, y: 0, type: 'passive' },
+      { id: '1b', name: '1B', x: 20, y: 0, type: 'passive' },
+      { id: '2a', name: '2A', x: 35, y: 0, type: 'passive' },
+      { id: '2b', name: '2B', x: 50, y: 0, type: 'passive' },
+      { id: '3a', name: '3A', x: 5, y: 45, type: 'passive' },
+      { id: '3b', name: '3B', x: 20, y: 45, type: 'passive' },
+      { id: '4a', name: '4A', x: 35, y: 45, type: 'passive' },
+      { id: '4b', name: '4B', x: 50, y: 45, type: 'passive' },
     ],
   },
   toggle_switch: {
@@ -1134,6 +1128,19 @@ export const COMPONENT_DEFINITIONS: Record<string, ComponentMetadata> = {
       { id: 'vcc', name: '5V', x: 20, y: 15, type: 'power' },
       { id: 'din', name: 'DIN', x: 30, y: 15, type: 'signal' },
       { id: 'dout', name: 'DOUT', x: 140, y: 15, type: 'signal' },
+    ],
+  },
+  lightbulb: {
+    type: 'lightbulb',
+    name: 'Lightbulb',
+    category: 'outputs',
+    width: 50,
+    height: 60,
+    description: 'A standard lightbulb that glows when powered.',
+    defaultProperties: { lit: false },
+    pins: [
+      { id: 'pin1', name: 'Terminal 1', x: 15, y: 55, type: 'passive' },
+      { id: 'pin2', name: 'Terminal 2', x: 35, y: 55, type: 'passive' },
     ],
   },
 };

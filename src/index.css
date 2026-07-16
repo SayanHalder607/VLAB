@@ -2,23 +2,41 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
-:root, [data-theme="dark"] {
+:root {
+  --bg-main: #f8fafc;
+  --bg-panel: #ffffff;
+  --bg-panel-light: #f1f5f9;
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --border-color: #cbd5e1;
+
+  /* Snitch Framework Default (Light) Variables */
+  --snitch-bg-base: #f8fafc;
+  --snitch-bg-surface: #ffffff;
+  --snitch-bg-alt: #f1f5f9;
+  --snitch-text-main: #0f172a;
+  --snitch-text-muted: #64748b;
+  --snitch-border: #e2e8f0;
+}
+
+[data-theme="dark"] {
   --bg-main: #020617; /* slate-950 */
   --bg-panel: #0f172a; /* slate-900 */
   --bg-panel-light: #1e293b; /* slate-800 */
   --text-main: #f1f5f9; /* slate-100 */
   --text-muted: #94a3b8; /* slate-400 */
   --border-color: #334155; /* slate-700 */
+
+  /* Snitch Framework Dark Theme Overrides */
+  --snitch-bg-base: #020617;
+  --snitch-bg-surface: #0f172a;
+  --snitch-bg-alt: #1e293b;
+  --snitch-text-main: #f1f5f9;
+  --snitch-text-muted: #94a3b8;
+  --snitch-border: #334155;
 }
 
-[data-theme="light"] {
-  --bg-main: #f8fafc; /* slate-50 */
-  --bg-panel: #ffffff; /* white */
-  --bg-panel-light: #f1f5f9; /* slate-100 */
-  --text-main: #0f172a; /* slate-900 */
-  --text-muted: #64748b; /* slate-500 */
-  --border-color: #cbd5e1; /* slate-300 */
-}
+
 
 @layer base {
   body {
@@ -110,4 +128,80 @@
   animation: pulse-snap 1s infinite ease-in-out;
 }
 @import './snitch.css';
+
+/* LED Glow Styles */
+.led-on-white { filter: drop-shadow(0 0 12px rgba(255, 255, 255, 0.8)); }
+
+@keyframes buzzerRing {
+  0% { transform: scale(1) translate(0, 0); opacity: 1; }
+  10% { transform: scale(1.05) translate(-1px, -1px); opacity: 0.9; }
+  20% { transform: scale(1) translate(1px, 1px); opacity: 1; }
+  30% { transform: scale(1.05) translate(-1px, 1px); opacity: 0.9; }
+  40% { transform: scale(1) translate(1px, -1px); opacity: 1; }
+  50% { transform: scale(1.05) translate(-1px, -1px); opacity: 0.9; }
+  60% { transform: scale(1) translate(1px, 1px); opacity: 1; }
+  70% { transform: scale(1.05) translate(-1px, 1px); opacity: 0.9; }
+  80% { transform: scale(1) translate(1px, -1px); opacity: 1; }
+  90% { transform: scale(1.05) translate(-1px, -1px); opacity: 0.9; }
+  100% { transform: scale(1) translate(0, 0); opacity: 1; }
+}
+
+.buzzer-ringing {
+  animation: buzzerRing 0.1s infinite linear;
+  filter: drop-shadow(0 0 8px rgba(168, 85, 247, 0.6));
+  transform-origin: center center;
+}
+
+.led-on-red {
+  filter: drop-shadow(0px 0px 8px rgba(239, 68, 68, 0.75));
+  opacity: 1 !important;
+}
+.led-on-yellow {
+  filter: drop-shadow(0px 0px 8px rgba(234, 179, 8, 0.75));
+  opacity: 1 !important;
+}
+.led-on-green {
+  filter: drop-shadow(0px 0px 8px rgba(34, 197, 94, 0.75));
+  opacity: 1 !important;
+}
+
+/* DC Motor Spinning Animations */
+@keyframes spin-cw {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes spin-ccw {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(-360deg); }
+}
+
+.motor-spin-cw, .spin-cw {
+  animation: spin-cw 0.5s linear infinite;
+}
+
+.motor-spin-ccw, .spin-ccw {
+  animation: spin-ccw 0.5s linear infinite;
+}
+
+.dc-motor-rotor {
+  transform-origin: center center;
+  transform-box: fill-box;
+}
+
+/* Lightbulb Glow Styles */
+.bulb-on {
+  fill: #FFD700 !important;
+  filter: drop-shadow(0 0 10px yellow) !important;
+}
+.bulb-off {
+  fill: #808080 !important;
+  filter: none !important;
+}
+
+.lightbulb.glow-active circle {
+    filter: drop-shadow(0px 0px 20px #FFEA00) !important;
+    transition: all 0.1s ease-in-out;
+}
+
 

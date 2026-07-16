@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import type { ComponentInstance } from '../types';
 import { getSchematicDimensions, getSchematicPinCoords } from '../utils/schematicLayout';
 import { COMPONENT_DEFINITIONS } from '../utils/componentDefinitions';
@@ -10,7 +10,125 @@ interface ComponentRendererProps {
   getPinVoltage?: (pinId: string) => number;
   sensorValues?: Record<string, any>;
   hoveredPinId?: string;
+  showBreadboardInternals?: boolean;
+  // Raw interpreter pin states — passed directly from simState.pinStates
+  // for zero-latency relay/bulb state detection without BFS or window polling.
+  rawPinStates?: Record<string, number | boolean | string>;
 }
+
+// Custom hook to bypass stale closures and force a node read
+export const useNodeVoltage = (nodeId: string, engineTickRate = 50) => {
+  const [voltage, setVoltage] = useState<string | number>('LOW');
+
+  useEffect(() => {
+    if (!nodeId) return;
+    const interval = setInterval(() => {
+      // Directly query the engine's source of truth
+      const currentVoltage = (window as any).SimulationEngine?.getNodeVoltage(nodeId) ?? 0.0;
+      if (typeof currentVoltage === 'number') {
+        if (currentVoltage > 1.5) {
+          setVoltage('HIGH');
+        } else {
+          setVoltage('LOW');
+        }
+      } else {
+        setVoltage(currentVoltage);
+      }
+    }, engineTickRate);
+    
+    return () => clearInterval(interval);
+  }, [nodeId, engineTickRate]);
+
+  return voltage;
+};
+
+// Helper: checks if GP15 or GP25 is HIGH in raw pin states
+const isRelayControlHigh = (rawPinStates?: Record<string, number | boolean | string>) => {
+  if (!rawPinStates) return false;
+  return rawPinStates['GP15'] === 1 || rawPinStates['GP15'] === true || rawPinStates['GP15'] === 'HIGH' ||
+         rawPinStates['15']   === 1 || rawPinStates['15']   === true || rawPinStates['15']   === 'HIGH' ||
+         rawPinStates['GP25'] === 1 || rawPinStates['GP25'] === true || rawPinStates['GP25'] === 'HIGH' ||
+         rawPinStates['25']   === 1 || rawPinStates['25']   === true || rawPinStates['25']   === 'HIGH';
+};
+
+export const RelayModule: React.FC<{ instance: ComponentInstance; signalNodeId?: string; rawPinStates?: Record<string, number | boolean | string> }> = ({ 
+  instance, 
+  signalNodeId = 'GP25',
+  rawPinStates,
+}) => {
+  const signalVoltage = useNodeVoltage(signalNodeId);
+  // Primary: use rawPinStates prop (zero latency, direct from interpreter)
+  // Fallback: useNodeVoltage hook polling via SimulationEngine
+  const relayHigh = isRelayControlHigh(rawPinStates);
+  const isOn = relayHigh || signalVoltage === 'HIGH' || signalVoltage === 1 || instance.properties.state;
+
+  return (
+    <g className="relay-wrapper">
+      {/* Board */}
+      <rect width={60} height={70} fill="#1e293b" stroke="#334155" strokeWidth={2} rx={4} />
+      
+      {/* Relay Cube (Blue) */}
+      <rect x={10} y={10} width={40} height={42} fill={isOn ? '#1d4ed8' : '#2563eb'} rx={2} />
+      <text x={30} y={28} fill="#ffffff" fontSize={8} textAnchor="middle" fontWeight="bold">RELAY</text>
+      <text x={30} y={38} fill="#93c5fd" fontSize={6} textAnchor="middle">SRD-05VDC</text>
+      <text className="relay-status" x={30} y={48} fill="#ffffff" fontSize={7} textAnchor="middle" fontWeight="bold">
+        {isOn ? '[ON]' : '[OFF]'}
+      </text>
+
+      {/* Power status indicator LED (Bright green when active, bright red when inactive) */}
+      <circle className="indicator-led" cx={35} cy={60} r={2.5} fill={isOn ? '#00FF00' : '#FF0000'} />
+    </g>
+  );
+};
+
+export const Lightbulb: React.FC<{ instance: ComponentInstance; inputNodeId: string; outputNodeId: string; rawPinStates?: Record<string, number | boolean | string> }> = ({ 
+  instance: _instance, 
+  inputNodeId, 
+  outputNodeId,
+  rawPinStates,
+}) => {
+  const vIn = useNodeVoltage(inputNodeId);
+  const vOut = useNodeVoltage(outputNodeId);
+  
+  // Primary: direct relay control check from raw pin states (zero latency)
+  // Fallback: BFS-propagated voltage check via useNodeVoltage hook
+  const relayOn = isRelayControlHigh(rawPinStates);
+  const bfsGlowing = (vIn === 'HIGH' || vIn === 1) && (vOut === 'LOW' || vOut === 0 || vOut === 'FLOAT');
+  const isGlowing = relayOn || bfsGlowing;
+
+  return (
+    <g className={`lightbulb ${isGlowing ? 'glow-active' : ''}`}>
+      {/* Bulb base / screw thread */}
+      <rect x={17} y={35} width={16} height={10} fill="#64748b" rx={1} />
+      <rect x={19} y={45} width={12} height={4} fill="#475569" rx={1} />
+      <path d="M 21 49 L 29 49 L 27 53 L 23 53 Z" fill="#334155" />
+
+      {/* Glass body - fill color actively binds to the glowing state */}
+      <circle 
+        cx={25} 
+        cy={22} 
+        r={18} 
+        className={isGlowing ? 'bulb-on' : 'bulb-off'} 
+        fill={isGlowing ? '#FFEA00' : '#555555'} 
+        stroke={isGlowing ? '#facc15' : '#cbd5e1'} 
+        strokeWidth={2} 
+      />
+      
+      {/* Glow effect */}
+      {isGlowing && (
+        <circle cx={25} cy={22} r={28} fill="#FFEA00" opacity={0.3} style={{ filter: 'blur(4px)', pointerEvents: 'none' }} />
+      )}
+
+      {/* Filament inside */}
+      <path d="M 18 28 L 22 20 L 28 20 L 32 28" fill="none" stroke={isGlowing ? '#eab308' : '#94a3b8'} strokeWidth={1.5} />
+      <circle cx={22} cy={20} r={1} fill={isGlowing ? '#eab308' : '#94a3b8'} />
+      <circle cx={28} cy={20} r={1} fill={isGlowing ? '#eab308' : '#94a3b8'} />
+
+      <text x={25} y={62} fill="#0f172a" fontSize={7} textAnchor="middle" fontWeight="bold">BULB</text>
+    </g>
+  );
+};
+
 
 // Helper for resistor band colors
 const getResistorBands = (ohms: number = 220): string[] => {
@@ -24,6 +142,50 @@ const getResistorBands = (ohms: number = 220): string[] => {
   return ['#78350f', '#dc2626', '#78350f'];
 };
 
+const DCMotorRotor: React.FC<{ terminal1Voltage: 'HIGH' | 'LOW'; terminal2Voltage: 'HIGH' | 'LOW' }> = ({
+  terminal1Voltage,
+  terminal2Voltage,
+}) => {
+  const [rotation, setRotation] = React.useState(0);
+  const requestRef = React.useRef<number | null>(null);
+
+  React.useEffect(() => {
+    const animate = () => {
+      setRotation(prevAngle => {
+        // Evaluate logic states directly in the frame loop
+        if (terminal1Voltage === 'HIGH' && terminal2Voltage === 'LOW') {
+          return (prevAngle + 10) % 360; // Rotate Clockwise
+        } else if (terminal1Voltage === 'LOW' && terminal2Voltage === 'HIGH') {
+          return (prevAngle - 10) % 360; // Rotate Counter-Clockwise
+        }
+        return prevAngle; // Brake/Stop
+      });
+      requestRef.current = requestAnimationFrame(animate);
+    };
+
+    requestRef.current = requestAnimationFrame(animate);
+    return () => {
+      if (requestRef.current) {
+        cancelAnimationFrame(requestRef.current);
+      }
+    };
+  }, [terminal1Voltage, terminal2Voltage]);
+
+  return (
+    <g 
+      style={{ 
+        transform: `rotate(${rotation}deg)`,
+        transformOrigin: '30px 40px' 
+      }}
+    >
+      {/* Invisible circle to force bounding box center to be (30, 40) */}
+      <circle cx={30} cy={40} r={25} fill="none" pointerEvents="none" opacity={0} />
+      <rect x={28} y={15} width={4} height={25} fill="#f59e0b" rx={1} />
+      <circle cx={30} cy={18} r={2} fill="#000" />
+    </g>
+  );
+};
+
 export const ComponentSVGs: React.FC<ComponentRendererProps> = ({
   instance,
   viewMode,
@@ -31,6 +193,7 @@ export const ComponentSVGs: React.FC<ComponentRendererProps> = ({
   getPinVoltage,
   sensorValues = {},
   hoveredPinId,
+  rawPinStates,
 }) => {
   const { type, name, properties } = instance;
   const isSchematic = viewMode === 'schematic';
@@ -38,18 +201,14 @@ export const ComponentSVGs: React.FC<ComponentRendererProps> = ({
   // Check if LED is ON
   let isLedOn = false;
   if (type === 'led') {
-    const ledColor = properties.color || 'red';
-    const forwardVoltages: Record<string, number> = {
-      red: 1.8,
-      green: 2.0,
-      blue: 3.0,
-      yellow: 2.0,
-      white: 3.0,
-    };
-    const fv = forwardVoltages[ledColor] || 1.8;
     const anodeVolt = getPinVoltage ? getPinVoltage('anode') : (isPinActive('anode') ? 5.0 : 0.0);
     const cathodeVolt = getPinVoltage ? getPinVoltage('cathode') : (isPinActive('cathode') ? 5.0 : 0.0);
-    isLedOn = (anodeVolt - cathodeVolt) >= fv;
+    
+    // Listen to the anode voltage state going HIGH (> 1.5V) and cathode tied to GND (<= 0.5V)
+    const isAnodeHigh = anodeVolt > 1.5;
+    const isCathodeGnd = cathodeVolt <= 0.5;
+    
+    isLedOn = isAnodeHigh && isCathodeGnd;
   }
   
   // Motor speeds
@@ -63,8 +222,7 @@ export const ComponentSVGs: React.FC<ComponentRendererProps> = ({
   // Buzzer active
   const isBuzzerActive = type === 'buzzer' && (isPinActive('positive'));
 
-  // Relay switch active
-  const isRelayOn = type === 'relay' && (isPinActive('in') || properties.state);
+
 
   // Render Schematic view symbols
   if (isSchematic) {
@@ -392,42 +550,36 @@ export const ComponentSVGs: React.FC<ComponentRendererProps> = ({
       return (
         <g>
           {/* Main PCB Board - Tinkercad Teal */}
-          <path d="M 4 0 L 196 0 A 4 4 0 0 1 200 4 L 200 136 A 4 4 0 0 1 196 140 L 4 140 A 4 4 0 0 1 0 136 L 0 4 A 4 4 0 0 1 4 0 Z" fill="#00878F" stroke="#005B60" strokeWidth={2} />
+          <path d="M 4 0 L 196 0 A 4 4 0 0 1 200 4 L 200 136 A 4 4 0 0 1 196 140 L 4 140 A 4 4 0 0 1 0 136 L 0 4 A 4 4 0 0 1 4 0 Z" fill="#17A2B8" />
           
           {/* subtle board traces decoration */}
-          <path d="M 20 60 L 30 70 L 30 110 M 150 40 L 160 30 L 180 30" fill="none" stroke="#009BA4" strokeWidth={1} opacity={0.6} />
+          <path d="M 20 60 L 30 70 L 30 110 M 150 40 L 160 30 L 180 30" fill="none" stroke="#138496" strokeWidth={1} opacity={0.6} />
 
-          {/* USB Type-B port (metallic silver) */}
+          {/* USB Type-B port (flat silver) */}
           <g>
-            <rect x={-10} y={15} width={32} height={26} fill="#E0E0E0" stroke="#B0B0B0" strokeWidth={1} rx={2} />
-            <rect x={-6} y={18} width={26} height={20} fill="#F5F5F5" />
-            <path d="M -4 21 L 10 21 L 8 33 L -2 33 Z" fill="#D0D0D0" />
-            {/* USB symbol */}
-            <circle cx={4} cy={27} r={1.5} fill="#888" />
+            <rect x={-10} y={15} width={32} height={26} fill="#CBD5E1" rx={2} />
+            <rect x={-6} y={18} width={26} height={20} fill="#F1F5F9" />
+            <path d="M -4 21 L 10 21 L 8 33 L -2 33 Z" fill="#94A3B8" />
           </g>
 
-          {/* Power jack cylinder (black matte) */}
+          {/* Power jack cylinder (flat dark) */}
           <g>
-            <rect x={-8} y={78} width={34} height={26} fill="#1A1A1A" rx={2} />
-            <rect x={2} y={80} width={22} height={22} fill="#2A2A2A" />
-            <circle cx={14} cy={91} r={6} fill="#09090b" />
-            <circle cx={14} cy={91} r={3} fill="#d4d4d8" /> {/* center pin */}
+            <rect x={-8} y={78} width={34} height={26} fill="#1E293B" rx={2} />
+            <rect x={2} y={80} width={22} height={22} fill="#0F172A" />
           </g>
 
-          {/* Voltage Regulator and Capacitors */}
+          {/* Voltage Regulator and Capacitors (flat) */}
           <g>
-            <rect x={35} y={45} width={12} height={12} fill="#222" rx={1} />
-            <rect x={47} y={48} width={3} height={6} fill="#A0A0A0" />
-            <circle cx={35} cy={80} r={4} fill="#E0E0E0" stroke="#B0B0B0" strokeWidth={0.5} />
-            <circle cx={35} cy={100} r={4} fill="#E0E0E0" stroke="#B0B0B0" strokeWidth={0.5} />
-            <path d="M 33 78 L 37 78 M 33 98 L 37 98" stroke="#333" strokeWidth={0.5} />
+            <rect x={35} y={45} width={12} height={12} fill="#334155" rx={1} />
+            <rect x={47} y={48} width={3} height={6} fill="#94A3B8" />
+            <circle cx={35} cy={80} r={4} fill="#CBD5E1" />
+            <circle cx={35} cy={100} r={4} fill="#CBD5E1" />
           </g>
 
           {/* Red reset button */}
           <g>
-            <rect x={12} y={5} width={14} height={14} fill="#E5E5E5" rx={2} stroke="#B0B0B0" strokeWidth={1} />
+            <rect x={12} y={5} width={14} height={14} fill="#E2E8F0" rx={2} />
             <circle cx={19} cy={12} r={4.5} fill="#EF4444" />
-            <circle cx={19} cy={12} r={3} fill="#DC2626" />
           </g>
 
           {/* Large ATmega328P IC chip */}
@@ -437,18 +589,16 @@ export const ComponentSVGs: React.FC<ComponentRendererProps> = ({
               const lx = 63 + idx * 5.8;
               return (
                 <g key={`atmega-pin-${idx}`}>
-                  <rect x={lx} y={100} width={2.5} height={6} fill="#C0C0C0" />
-                  <rect x={lx} y={120} width={2.5} height={6} fill="#C0C0C0" />
+                  <rect x={lx} y={100} width={2.5} height={6} fill="#94A3B8" />
+                  <rect x={lx} y={120} width={2.5} height={6} fill="#94A3B8" />
                 </g>
               );
             })}
             {/* Body */}
-            <rect x={58} y={103} width={88} height={20} fill="#1C1C1C" rx={2} />
+            <rect x={58} y={103} width={88} height={20} fill="#334155" rx={2} />
             {/* Notch */}
-            <path d="M 146 108 A 4 4 0 0 0 146 118" fill="#111" />
-            {/* Label */}
-            <text x={102} y={116} fill="#999999" fontSize={6.5} fontFamily="monospace" fontWeight="bold" textAnchor="middle">ATMEGA328P-PU</text>
-            <circle cx={142} cy={107} r={1} fill="#555" />
+            <path d="M 146 108 A 4 4 0 0 0 146 118" fill="#1E293B" />
+            <circle cx={142} cy={107} r={1} fill="#475569" />
           </g>
 
           {/* Centered texts and logos */}
@@ -461,16 +611,16 @@ export const ComponentSVGs: React.FC<ComponentRendererProps> = ({
 
           {/* 3 small yellow LEDs labeled "TX", "RX", "L" & "ON" */}
           <g>
-            <rect x={160} y={48} width={5} height={4} fill={isPinActive('arduino-D13') || isPinActive('D13') ? '#fbbf24' : '#3f3f46'} stroke="#27272a" strokeWidth={0.5} />
+            <rect x={160} y={48} width={5} height={4} fill={isPinActive('arduino-D13') || isPinActive('D13') ? '#fbbf24' : '#64748B'} rx={1} />
             <text x={153} y={52} fill="#ffffff" fontSize={6} fontWeight="bold" textAnchor="end" opacity={0.8}>L</text>
             
-            <rect x={160} y={58} width={5} height={4} fill={isPinActive('arduino-D1') || isPinActive('D1') ? '#fbbf24' : '#3f3f46'} stroke="#27272a" strokeWidth={0.5} />
+            <rect x={160} y={58} width={5} height={4} fill={isPinActive('arduino-D1') || isPinActive('D1') ? '#fbbf24' : '#64748B'} rx={1} />
             <text x={153} y={62} fill="#ffffff" fontSize={6} fontWeight="bold" textAnchor="end" opacity={0.8}>TX</text>
             
-            <rect x={160} y={68} width={5} height={4} fill={isPinActive('arduino-D0') || isPinActive('D0') ? '#fbbf24' : '#3f3f46'} stroke="#27272a" strokeWidth={0.5} />
+            <rect x={160} y={68} width={5} height={4} fill={isPinActive('arduino-D0') || isPinActive('D0') ? '#fbbf24' : '#64748B'} rx={1} />
             <text x={153} y={72} fill="#ffffff" fontSize={6} fontWeight="bold" textAnchor="end" opacity={0.8}>RX</text>
 
-            <rect x={180} y={105} width={5} height={4} fill="#22c55e" stroke="#27272a" strokeWidth={0.5} />
+            <rect x={180} y={105} width={5} height={4} fill="#22c55e" rx={1} />
             <text x={180} y={115} fill="#ffffff" fontSize={6} fontWeight="bold" textAnchor="middle" opacity={0.8}>ON</text>
           </g>
 
@@ -497,7 +647,7 @@ export const ComponentSVGs: React.FC<ComponentRendererProps> = ({
             { id: 'arduino-AREF', label: 'AREF', x: 59, y: 12 }
           ].map(p => (
             <g key={p.id}>
-              <rect x={p.x - 3} y={p.y - 4} width={6} height={8} fill="#27272a" stroke="#52525b" strokeWidth={0.5} data-pin={p.id} />
+              <rect x={p.x - 3} y={p.y - 4} width={6} height={8} fill="#1E293B" data-pin={p.id} />
               <text x={p.x} y={p.y - 6} fill="#ffffff" fontSize={6} fontWeight="bold" textAnchor="middle" opacity={0.9}>{p.label}</text>
             </g>
           ))}
@@ -520,7 +670,7 @@ export const ComponentSVGs: React.FC<ComponentRendererProps> = ({
             { id: 'arduino-A5', label: 'A5', x: 165, y: 128 }
           ].map(p => (
             <g key={p.id}>
-              <rect x={p.x - 3} y={p.y - 4} width={6} height={8} fill="#27272a" stroke="#52525b" strokeWidth={0.5} data-pin={p.id} />
+              <rect x={p.x - 3} y={p.y - 4} width={6} height={8} fill="#1E293B" data-pin={p.id} />
               <text x={p.x} y={p.y - 6} fill="#ffffff" fontSize={5} fontWeight="bold" textAnchor="middle" opacity={0.9}>{p.label}</text>
             </g>
           ))}
@@ -533,30 +683,30 @@ export const ComponentSVGs: React.FC<ComponentRendererProps> = ({
       return (
         <g>
           {/* Raspberry Pi Green PCB */}
-          <rect width={250} height={100} fill="#065f46" stroke="#064e3b" strokeWidth={3} rx={8} />
+          <rect width={250} height={100} fill="#059669" rx={8} />
           
           {/* USB micro Port */}
           <rect x={5} y={35} width={20} height={30} fill="#475569" rx={2} />
-          <text x={13} y={53} fill="#94a3b8" fontSize={8} textAnchor="middle" transform="rotate(-90 13 53)" fontWeight="bold">USB</text>
+          <text x={13} y={53} fill="#94A3B8" fontSize={8} textAnchor="middle" transform="rotate(-90 13 53)" fontWeight="bold">USB</text>
 
           {/* Boot Select Button */}
-          <rect x={60} y={40} width={12} height={20} fill="#f8fafc" rx={1} />
-          <circle cx={66} cy={50} r={3} fill="#cbd5e1" />
+          <rect x={60} y={40} width={12} height={20} fill="#F8FAFC" rx={1} />
+          <circle cx={66} cy={50} r={3} fill="#CBD5E1" />
           
           {/* RP2040 Microchip */}
-          <rect x={130} y={30} width={40} height={40} fill="#1f2937" rx={2} transform="rotate(45 150 50)" />
-          <text x={150} y={53} fill="#4b5563" fontSize={8} fontWeight="bold" textAnchor="middle">RP2040</text>
+          <rect x={130} y={30} width={40} height={40} fill="#1F2937" rx={2} transform="rotate(45 150 50)" />
+          <text x={150} y={53} fill="#4B5563" fontSize={8} fontWeight="bold" textAnchor="middle">RP2040</text>
 
           {/* Pin Headers */}
-          <rect x={10} y={10} width={230} height={10} fill="#1e293b" />
-          <rect x={10} y={80} width={230} height={10} fill="#1e293b" />
+          <rect x={10} y={10} width={230} height={10} fill="#1E293B" />
+          <rect x={10} y={80} width={230} height={10} fill="#1E293B" />
 
           {/* Title label */}
-          <text x={150} y={25} fill="#a7f3d0" fontSize={10} fontWeight="bold" textAnchor="middle">Raspberry Pi Pico</text>
+          <text x={150} y={25} fill="#A7F3D0" fontSize={10} fontWeight="bold" textAnchor="middle">Raspberry Pi Pico</text>
           
           {/* Onboard LED */}
-          <rect x={210} y={40} width={6} height={6} fill={isPinActive('GP25') ? '#3b82f6' : '#374151'} />
-          <text x={213} y={55} fill="#a7f3d0" fontSize={7} textAnchor="middle">GP25</text>
+          <rect x={210} y={40} width={6} height={6} fill={isPinActive('GP25') ? '#3B82F6' : '#374151'} />
+          <text x={213} y={55} fill="#A7F3D0" fontSize={7} textAnchor="middle">GP25</text>
         </g>
       );
 
@@ -574,87 +724,127 @@ export const ComponentSVGs: React.FC<ComponentRendererProps> = ({
         else if (hoveredPinId.startsWith('hole_')) {
           const parts = hoveredPinId.split('_');
           if (parts.length === 3) {
-            const row = parts[1];
+            const row = parts[1].toLowerCase();
             const col = parts[2];
-            if (['A', 'B', 'C', 'D', 'E'].includes(row)) hoveredUpperCol = col;
-            else if (['F', 'G', 'H', 'I', 'J'].includes(row)) hoveredLowerCol = col;
+            if (['f', 'g', 'h', 'i', 'j'].includes(row)) hoveredUpperCol = col;
+            else if (['a', 'b', 'c', 'd', 'e'].includes(row)) hoveredLowerCol = col;
           }
         }
       }
 
       return (
         <g>
-          {/* Realistic Breadboard Body - Tinkercad Style */}
-          <rect width={550} height={256} fill="#E6E6E6" stroke="#cccccc" strokeWidth={2} rx={8} />
+          {/* Breadboard Base Shadow and Body (Premium Light Gray) */}
+          <rect width={535} height={285} fill="#E2E8F0" rx={8} />
+          <rect x={1.5} y={1.5} width={532} height={282} fill="#F1F5F9" stroke="#94A3B8" strokeWidth={1.5} rx={7.5} />
           
-          {/* Central Dividing Channel */}
-          <rect x={10} y={122} width={530} height={12} fill="#d4d4d4" rx={2} />
-          {/* Small indentations in the center channel */}
-          {Array.from({ length: 30 }).map((_, i) => (
-            <rect key={`indent-${i}`} x={48 + i * 16.5} y={124} width={4} height={8} fill="#c4c4c4" rx={1} />
-          ))}
+          {/* Central Dividing Channel (Recessed groove with inner shadow look) */}
+          <rect x={12} y={135} width={511} height={15} fill="#CBD5E1" rx={1.5} />
+          <rect x={12} y={141} width={511} height={3} fill="#94A3B8" />
 
           {/* Hover Rail Highlights */}
-          {hoveredRailGroup === 'top_neg' && <rect x={42} y={12} width={488} height={12} fill="rgba(59, 130, 246, 0.25)" rx={3} />}
-          {hoveredRailGroup === 'top_pos' && <rect x={42} y={26} width={488} height={12} fill="rgba(239, 68, 68, 0.25)" rx={3} />}
-          {hoveredRailGroup === 'bot_neg' && <rect x={42} y={218} width={488} height={12} fill="rgba(59, 130, 246, 0.25)" rx={3} />}
-          {hoveredRailGroup === 'bot_pos' && <rect x={42} y={232} width={488} height={12} fill="rgba(239, 68, 68, 0.25)" rx={3} />}
+          {hoveredRailGroup === 'top_neg' && <rect x={42} y={8} width={450} height={14} fill="rgba(59, 130, 246, 0.2)" rx={3} />}
+          {hoveredRailGroup === 'top_pos' && <rect x={42} y={23} width={450} height={14} fill="rgba(239, 68, 68, 0.2)" rx={3} />}
+          {hoveredRailGroup === 'bot_neg' && <rect x={42} y={248} width={450} height={14} fill="rgba(59, 130, 246, 0.2)" rx={3} />}
+          {hoveredRailGroup === 'bot_pos' && <rect x={42} y={263} width={450} height={14} fill="rgba(239, 68, 68, 0.2)" rx={3} />}
           
-          {hoveredUpperCol && <rect x={44 + (parseInt(hoveredUpperCol) - 1) * 16.5} y={52} width={12} height={68} fill="rgba(34, 197, 94, 0.25)" rx={2} />}
-          {hoveredLowerCol && <rect x={44 + (parseInt(hoveredLowerCol) - 1) * 16.5} y={136} width={12} height={68} fill="rgba(34, 197, 94, 0.25)" rx={2} />}
+          {/* Hover Column Highlights (Fills entire column of holes) */}
+          {hoveredUpperCol && <rect x={44.5 + (parseInt(hoveredUpperCol) - 1) * 15} y={53} width={11} height={74} fill="rgba(16, 185, 129, 0.2)" rx={2} />}
+          {hoveredLowerCol && <rect x={44.5 + (parseInt(hoveredLowerCol) - 1) * 15} y={158} width={11} height={74} fill="rgba(16, 185, 129, 0.2)" rx={2} />}
 
-          {/* Power Rail Colored Lines */}
-          <line x1={40} y1={10} x2={525} y2={10} stroke="#3b82f6" strokeWidth={1.5} />
-          <text x={28} y={21} fill="#3b82f6" fontSize={14} fontWeight="bold">-</text>
+          {/* Power Rail Silk-Screen Lines */}
+          {/* Top Negative Rail (Blue) */}
+          <line x1={45} y1={15} x2={490} y2={15} stroke="#3B82F6" strokeWidth={1.5} strokeDasharray="30, 8" />
+          <text x={30} y={19} fill="#3B82F6" fontSize={11} fontFamily="monospace" fontWeight="bold" textAnchor="middle">-</text>
+          <text x={505} y={19} fill="#3B82F6" fontSize={11} fontFamily="monospace" fontWeight="bold" textAnchor="middle">-</text>
           
-          <line x1={40} y1={40} x2={525} y2={40} stroke="#ef4444" strokeWidth={1.5} />
-          <text x={28} y={35} fill="#ef4444" fontSize={14} fontWeight="bold">+</text>
+          {/* Top Positive Rail (Red) */}
+          <line x1={45} y1={30} x2={490} y2={30} stroke="#EF4444" strokeWidth={1.5} strokeDasharray="30, 8" />
+          <text x={30} y={34} fill="#EF4444" fontSize={10} fontFamily="monospace" fontWeight="bold" textAnchor="middle">+</text>
+          <text x={505} y={34} fill="#EF4444" fontSize={10} fontFamily="monospace" fontWeight="bold" textAnchor="middle">+</text>
           
-          <line x1={40} y1={216} x2={525} y2={216} stroke="#3b82f6" strokeWidth={1.5} />
-          <text x={28} y={227} fill="#3b82f6" fontSize={14} fontWeight="bold">-</text>
+          {/* Bottom Negative Rail (Blue) */}
+          <line x1={45} y1={255} x2={490} y2={255} stroke="#3B82F6" strokeWidth={1.5} strokeDasharray="30, 8" />
+          <text x={30} y={259} fill="#3B82F6" fontSize={11} fontFamily="monospace" fontWeight="bold" textAnchor="middle">-</text>
+          <text x={505} y={259} fill="#3B82F6" fontSize={11} fontFamily="monospace" fontWeight="bold" textAnchor="middle">-</text>
 
-          <line x1={40} y1={246} x2={525} y2={246} stroke="#ef4444" strokeWidth={1.5} />
-          <text x={28} y={241} fill="#ef4444" fontSize={14} fontWeight="bold">+</text>
+          {/* Bottom Positive Rail (Red) */}
+          <line x1={45} y1={270} x2={490} y2={270} stroke="#EF4444" strokeWidth={1.5} strokeDasharray="30, 8" />
+          <text x={30} y={274} fill="#EF4444" fontSize={10} fontFamily="monospace" fontWeight="bold" textAnchor="middle">+</text>
+          <text x={505} y={274} fill="#EF4444" fontSize={10} fontFamily="monospace" fontWeight="bold" textAnchor="middle">+</text>
 
-          {/* Labels for Breadboard Columns */}
+          {/* silk-screen Column Labels (1 to 30) */}
           {Array.from({ length: 30 }).map((_, i) => (
             <g key={`col-label-${i}`}>
-              {(i + 1) % 5 === 0 && (
-                <text x={50 + i * 16.5} y={49} fill="#888888" fontSize={9} fontWeight="bold" textAnchor="middle">
-                  {i + 1}
-                </text>
-              )}
-              {(i + 1) % 5 === 0 && (
-                <text x={50 + i * 16.5} y={211} fill="#888888" fontSize={9} fontWeight="bold" textAnchor="middle">
-                  {i + 1}
-                </text>
-              )}
+              {(i + 1) % 5 === 0 || i === 0 ? (
+                <>
+                  <text x={50 + i * 15} y={49} fill="#64748B" fontSize={7} fontWeight="bold" fontFamily="sans-serif" textAnchor="middle">
+                    {i + 1}
+                  </text>
+                  <text x={50 + i * 15} y={242} fill="#64748B" fontSize={7} fontWeight="bold" fontFamily="sans-serif" textAnchor="middle">
+                    {i + 1}
+                  </text>
+                </>
+              ) : null}
             </g>
           ))}
 
-          {/* Labels for Rows A-J */}
-          {['a', 'b', 'c', 'd', 'e'].map((letter, idx) => (
-            <text key={`row-upper-${letter}`} x={36} y={118 - idx * 14} fill="#888888" fontSize={10} textAnchor="middle" fontWeight="bold">
-              {letter}
-            </text>
+          {/* silk-screen Row Letters (A-J) */}
+          {['J', 'I', 'H', 'G', 'F'].map((letter, idx) => (
+            <g key={`row-upper-${letter}`}>
+              <text x={30} y={63 + idx * 15} fill="#64748B" fontSize={8} fontWeight="bold" fontFamily="sans-serif" textAnchor="middle">{letter}</text>
+              <text x={505} y={63 + idx * 15} fill="#64748B" fontSize={8} fontWeight="bold" fontFamily="sans-serif" textAnchor="middle">{letter}</text>
+            </g>
           ))}
-          {['f', 'g', 'h', 'i', 'j'].map((letter, idx) => (
-            <text key={`row-lower-${letter}`} x={36} y={146 + idx * 14} fill="#888888" fontSize={10} textAnchor="middle" fontWeight="bold">
-              {letter}
-            </text>
+          {['E', 'D', 'C', 'B', 'A'].map((letter, idx) => (
+            <g key={`row-lower-${letter}`}>
+              <text x={30} y={169 + idx * 15} fill="#64748B" fontSize={8} fontWeight="bold" fontFamily="sans-serif" textAnchor="middle">{letter}</text>
+              <text x={505} y={169 + idx * 15} fill="#64748B" fontSize={8} fontWeight="bold" fontFamily="sans-serif" textAnchor="middle">{letter}</text>
+            </g>
           ))}
+        </g>
+      );
+    }
+
+    case 'buzzer': {
+      return (
+        <g className={isBuzzerActive ? "buzzer-ringing" : ""}>
+          {/* Main Piezo Cylinder */}
+          <rect x={10} y={15} width={30} height={20} fill={isBuzzerActive ? "#1e293b" : "#0f172a"} stroke="#334155" strokeWidth={2} rx={2} />
+          {/* Top circle detail */}
+          <circle cx={25} cy={25} r={8} fill="none" stroke="#334155" strokeWidth={2} />
+          <circle cx={25} cy={25} r={2} fill="#334155" />
+          
+          {/* Sound waves when active */}
+          {isBuzzerActive && (
+            <g stroke="#a855f7" strokeWidth={1.5} fill="none">
+              <path d="M 5 20 A 8 8 0 0 0 5 30" />
+              <path d="M 1 17 A 12 12 0 0 0 1 33" />
+              <path d="M 45 20 A 8 8 0 0 1 45 30" />
+              <path d="M 49 17 A 12 12 0 0 1 49 33" />
+            </g>
+          )}
+
+          {/* Positive Pin (Left) */}
+          <line x1={15} y1={35} x2={15} y2={45} stroke="#94A3B8" strokeWidth={2.5} />
+          {/* Negative Pin (Right) */}
+          <line x1={35} y1={35} x2={35} y2={45} stroke="#94A3B8" strokeWidth={2.5} />
+          
+          {/* + / - indicators */}
+          <text x={15} y={12} fill="#a855f7" fontSize={8} fontWeight="bold" textAnchor="middle">+</text>
+          <text x={35} y={12} fill="#94A3B8" fontSize={8} fontWeight="bold" textAnchor="middle">-</text>
         </g>
       );
     }
 
     case 'led': {
       const ledColor = properties.color || 'red';
-      const colorMap: Record<string, { body: string; off: string; dome: string; glow: string }> = {
-        red: { body: '#FF3333', off: '#88222299', dome: '#fca5a5', glow: 'rgba(255, 51, 51, 0.8)' },
-        green: { body: '#33FF33', off: '#22772299', dome: '#86efac', glow: 'rgba(51, 255, 51, 0.8)' },
-        blue: { body: '#4488FF', off: '#22448899', dome: '#93c5fd', glow: 'rgba(68, 136, 255, 0.8)' },
-        yellow: { body: '#FFAA00', off: '#88662299', dome: '#fde047', glow: 'rgba(255, 170, 0, 0.8)' },
-        white: { body: '#FFFFFF', off: '#99999999', dome: '#e2e8f0', glow: 'rgba(255, 255, 255, 0.8)' },
+      const colorMap: Record<string, { body: string; off: string; glow: string }> = {
+        red: { body: '#EF4444', off: '#7F1D1D', glow: 'rgba(239, 68, 68, 0.5)' },
+        green: { body: '#22C55E', off: '#14532D', glow: 'rgba(34, 197, 94, 0.5)' },
+        blue: { body: '#3B82F6', off: '#1E3A8A', glow: 'rgba(59, 130, 246, 0.5)' },
+        yellow: { body: '#EAB308', off: '#713F12', glow: 'rgba(234, 179, 8, 0.5)' },
+        white: { body: '#F9FAFB', off: '#D1D5DB', glow: 'rgba(255, 255, 255, 0.5)' },
       };
       const colors = colorMap[ledColor] || colorMap.red;
       const ledColorVal = isLedOn ? colors.body : colors.off;
@@ -662,99 +852,85 @@ export const ComponentSVGs: React.FC<ComponentRendererProps> = ({
 
       return (
         <g>
-          {/* LED Legs (Metallic silver) */}
-          {/* Anode (Longer, bent slightly) */}
-          <path d="M 15 45 L 15 35 L 12 30 L 12 25" fill="none" stroke="#C0C0C0" strokeWidth={2} />
-          {/* Cathode (Shorter, straight) */}
-          <line x1={25} y1={25} x2={25} y2={45} stroke="#C0C0C0" strokeWidth={2} />
+          {/* LED Legs (Flat silver, bent to slot into breadboard holes at x=5 and x=20) */}
+          {/* Anode (Left leg, bends from x=10 under the dome to x=5) */}
+          <path d="M 10 25 L 10 32 L 5 37 L 5 45" fill="none" stroke="#94A3B8" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" />
+          {/* Cathode (Right leg, straight down to x=20) */}
+          <path d="M 20 25 L 20 45" fill="none" stroke="#94A3B8" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" />
 
           {/* Internal Anode/Cathode Plates */}
-          <rect x={11} y={18} width={4} height={6} fill="#444" />
-          <path d="M 23 15 L 28 15 L 28 24 L 23 24 Z" fill="#444" />
+          <path d="M 8 16 L 12 16 L 12 25 L 8 25 Z" fill="#94A3B8" opacity={0.6} /> {/* Anode internal */}
+          <path d="M 18 14 L 24 14 L 24 25 L 18 25 Z" fill="#94A3B8" opacity={0.7} /> {/* Cathode internal */}
 
-          {/* LED Glass Dome (Translucent Epoxy) */}
+          {/* LED Glass Dome (Semi-transparent) */}
           <path 
-            d="M 8 25 L 8 16 A 12 12 0 0 1 32 16 L 32 25 Z" 
+            d="M 5 25 L 5 15 A 10 10 0 0 1 25 15 L 25 25 Z" 
             fill={ledColorVal} 
             opacity={0.85} 
-            stroke={colors.dome} 
-            strokeWidth={1.5}
             style={{ 
-              transition: 'fill 80ms ease-in-out, filter 80ms ease-in-out',
+              transition: 'fill 80ms ease-in-out, filter 80ms ease-in-out, opacity 80ms ease-in-out',
               filter: ledFilter 
             }}
           />
           
-          {/* Flat base edge for Cathode side indicator */}
+          {/* Flat base edge rim */}
           <path 
-            d="M 6 25 L 32 25 L 32 28 L 6 28 Z" 
+            d="M 3 25 L 27 25 L 27 28 L 3 28 Z" 
             fill={ledColorVal} 
-            stroke={colors.dome} 
-            strokeWidth={1}
+            opacity={0.9}
             style={{ 
               transition: 'fill 80ms ease-in-out, filter 80ms ease-in-out',
               filter: ledFilter 
             }}
           />
 
-          {/* White Glossy Highlight to simulate 3D plastic */}
-          <path 
-            d="M 12 10 A 6 6 0 0 1 18 6 A 10 10 0 0 0 10 16 Z" 
-            fill="#FFFFFF" 
-            opacity={0.6} 
-          />
-
-          {/* Extra Radial Glow circles */}
+          {/* Extra Radial Glow circles when active */}
           {isLedOn && (
-            <g>
-              <circle cx={20} cy={16} r={16} fill={colors.body} opacity={0.2} className="pulse-glow pointer-events-none" />
-              <circle cx={20} cy={16} r={6} fill="#fff" opacity={0.6} className="pointer-events-none" />
+            <g style={{ pointerEvents: 'none' }}>
+              <circle cx={15} cy={15} r={18} fill={colors.body} opacity={0.2} className="pulse-glow" />
+              <circle cx={15} cy={15} r={6} fill="#fff" opacity={0.5} />
             </g>
           )}
         </g>
       );
     }
 
-    case 'resistor':
+    case 'resistor': {
       const bands = getResistorBands(properties.resistance);
       return (
         <g>
-          {/* Wire lead line through resistor (metallic silver) */}
-          <line x1={0} y1={10} x2={60} y2={10} stroke="#C0C0C0" strokeWidth={2.5} />
-          <line x1={0} y1={10} x2={15} y2={10} stroke="#E0E0E0" strokeWidth={1} />
-          <line x1={45} y1={10} x2={60} y2={10} stroke="#E0E0E0" strokeWidth={1} />
+          {/* Wire lead line through resistor (metallic silver at y=7.5) */}
+          <line x1={0} y1={7.5} x2={60} y2={7.5} stroke="#94A3B8" strokeWidth={2} />
 
-          {/* Ceramic Resistor Body - Tinkercad beige pill */}
-          <rect x={12} y={4} width={36} height={12} fill="#E1C699" stroke="#C3A072" strokeWidth={1} rx={5} />
+          {/* Ceramic Resistor Body - Tinkercad beige pill centered at y=7.5 */}
+          <rect x={12} y={2} width={36} height={11} fill="#F5E6D3" stroke="#D7C4AE" strokeWidth={1} rx={4} />
           
           {/* Color Bands */}
-          <path d="M 18 4 L 18 16" stroke={bands[0]} strokeWidth={2.5} />
-          <path d="M 24 4 L 24 16" stroke={bands[1]} strokeWidth={2.5} />
-          <path d="M 30 4 L 30 16" stroke={bands[2]} strokeWidth={2.5} />
-          <path d="M 38 4 L 38 16" stroke="#DAA520" strokeWidth={2.5} /> {/* Gold Tolerance */}
-          
-          {/* Subtle 3D highlight on body */}
-          <rect x={13} y={5} width={34} height={3} fill="#ffffff" opacity={0.4} rx={1.5} />
+          <path d="M 18 2 L 18 13" stroke={bands[0]} strokeWidth={2.5} />
+          <path d="M 24 2 L 24 13" stroke={bands[1]} strokeWidth={2.5} />
+          <path d="M 30 2 L 30 13" stroke={bands[2]} strokeWidth={2.5} />
+          <path d="M 38 2 L 38 13" stroke="#D4AF37" strokeWidth={2.5} /> {/* Gold Tolerance */}
         </g>
       );
+    }
 
     case 'push_button':
       return (
         <g>
           {/* Base plate */}
-          <rect width={40} height={40} fill="#1e293b" stroke="#0f172a" strokeWidth={2} rx={6} />
+          <rect width={40} height={40} fill="#E5E7EB" rx={6} />
           
           {/* Circular housing */}
-          <circle cx={20} cy={20} r={14} fill="#334155" stroke="#475569" strokeWidth={1.5} />
+          <circle cx={20} cy={20} r={14} fill="#D1D5DB" />
           
           {/* Tactile plunger switch */}
-          <circle cx={20} cy={20} r={10} fill="#f43f5e" className="active:scale-95 transition-transform" />
+          <circle cx={20} cy={20} r={10} fill={properties.pressed ? '#DC2626' : '#EF4444'} className="active:scale-95 transition-transform" />
           
           {/* Corner legs */}
-          <rect x={-3} y={8} width={3} height={6} fill="#94a3b8" rx={1} />
-          <rect x={-3} y={26} width={3} height={6} fill="#94a3b8" rx={1} />
-          <rect x={40} y={8} width={3} height={6} fill="#94a3b8" rx={1} />
-          <rect x={40} y={26} width={3} height={6} fill="#94a3b8" rx={1} />
+          <rect x={-3} y={8} width={6} height={6} fill="#94A3B8" rx={1} />
+          <rect x={-3} y={26} width={6} height={6} fill="#94A3B8" rx={1} />
+          <rect x={37} y={8} width={6} height={6} fill="#94A3B8" rx={1} />
+          <rect x={37} y={26} width={6} height={6} fill="#94A3B8" rx={1} />
         </g>
       );
 
@@ -901,23 +1077,10 @@ export const ComponentSVGs: React.FC<ComponentRendererProps> = ({
       );
 
     case 'relay':
-      return (
-        <g>
-          {/* Board */}
-          <rect width={60} height={70} fill="#1e293b" stroke="#334155" strokeWidth={2} rx={4} />
-          
-          {/* Relay Cube (Blue) */}
-          <rect x={10} y={10} width={40} height={42} fill={isRelayOn ? '#1d4ed8' : '#2563eb'} rx={2} />
-          <text x={30} y={28} fill="#ffffff" fontSize={8} textAnchor="middle" fontWeight="bold">RELAY</text>
-          <text x={30} y={38} fill="#93c5fd" fontSize={6} textAnchor="middle">SRD-05VDC</text>
-          <text x={30} y={48} fill="#ffffff" fontSize={7} textAnchor="middle" fontWeight="bold">
-            {isRelayOn ? '[ON]' : '[OFF]'}
-          </text>
+      return <RelayModule instance={instance} signalNodeId={`${instance.id}/in`} rawPinStates={rawPinStates} />;
 
-          {/* Power status indicator LED */}
-          <circle cx={50} cy={60} r={2.5} fill={isRelayOn ? '#22c55e' : '#ef4444'} />
-        </g>
-      );
+    case 'lightbulb':
+      return <Lightbulb instance={instance} inputNodeId={`${instance.id}/pin1`} outputNodeId={`${instance.id}/pin2`} rawPinStates={rawPinStates} />;
 
     case 'l298n':
       return (
@@ -945,7 +1108,15 @@ export const ComponentSVGs: React.FC<ComponentRendererProps> = ({
         </g>
       );
 
-    case 'dc_motor':
+    case 'dc_motor': {
+      const t1Volt = getPinVoltage ? getPinVoltage('t1') : (isPinActive('t1') ? 5.0 : 0.0);
+      const t2Volt = getPinVoltage ? getPinVoltage('t2') : (isPinActive('t2') ? 5.0 : 0.0);
+      const isT1High = t1Volt > 1.5;
+      const isT2High = t2Volt > 1.5;
+      
+      const terminal1Voltage = isT1High ? 'HIGH' : 'LOW';
+      const terminal2Voltage = isT2High ? 'HIGH' : 'LOW';
+
       return (
         <g>
           {/* Circular metal motor body */}
@@ -958,14 +1129,12 @@ export const ComponentSVGs: React.FC<ComponentRendererProps> = ({
           <circle cx={30} cy={40} r={6} fill="#e2e8f0" />
           
           {/* Shaft pin */}
-          <g transform={`rotate(${isMotorSpinning ? (Date.now() / 2) % 360 : 0} 30 40)`}>
-            <rect x={28} y={15} width={4} height={25} fill="#f59e0b" rx={1} />
-            <circle cx={30} cy={18} r={2} fill="#000" />
-          </g>
+          <DCMotorRotor terminal1Voltage={terminal1Voltage} terminal2Voltage={terminal2Voltage} />
 
           <text x={30} y={72} fill="#0f172a" fontSize={7} textAnchor="middle" fontWeight="bold">DC MOTOR</text>
         </g>
       );
+    }
 
     case 'stepper_motor':
       return (
@@ -1050,12 +1219,15 @@ export const ComponentSVGs: React.FC<ComponentRendererProps> = ({
     case 'capacitor':
       return (
         <g>
-          {/* Ceramic capacitor tear drop shape */}
-          <path d="M 5 25 C 2 10, 28 10, 25 25 C 22 32, 8 32, 5 25 Z" fill="#38bdf8" stroke="#0284c7" strokeWidth={1.5} />
-          <text x={15} y={22} fill="#0f172a" fontSize={7} fontWeight="bold" textAnchor="middle">104</text>
-          {/* Two leads */}
-          <line x1={10} y1={29} x2={10} y2={38} stroke="#cbd5e1" strokeWidth={2} />
-          <line x1={20} y1={29} x2={20} y2={38} stroke="#94a3b8" strokeWidth={2} />
+          {/* Flat blue ceramic capacitor disc centered at x=7.5, y=2.5 */}
+          <circle cx={7.5} cy={2.5} r={4.5} fill="#38BDF8" stroke="#0284C7" strokeWidth={1} />
+          <text x={7.5} y={3.8} fill="#0F172A" fontSize={3.8} fontWeight="bold" fontFamily="sans-serif" textAnchor="middle">104</text>
+          
+          {/* Two straight parallel wire leads dropping down exactly to pin nodes (0, 7.5) and (15, 7.5) */}
+          {/* Left lead */}
+          <path d="M 4 2.5 L 0 2.5 L 0 7.5" fill="none" stroke="#94A3B8" strokeWidth={1.8} strokeLinecap="round" />
+          {/* Right lead */}
+          <path d="M 11 2.5 L 15 2.5 L 15 7.5" fill="none" stroke="#94A3B8" strokeWidth={1.8} strokeLinecap="round" />
         </g>
       );
 
@@ -1247,7 +1419,7 @@ export const ComponentSVGs: React.FC<ComponentRendererProps> = ({
       // Dynamic RGB color based on voltage
       // Map 0-5V to 0-255 RGB values
       const getPwmColor = (pinId: string) => {
-        const v = getPinVoltage(pinId);
+        const v = getPinVoltage ? getPinVoltage(pinId) : 0;
         return Math.min(255, Math.max(0, Math.round((v / 5.0) * 255)));
       };
       

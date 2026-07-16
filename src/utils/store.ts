@@ -35,7 +35,14 @@ const getStoredUser = () => {
 const getStoredExperiments = () => {
   try {
     const expStr = localStorage.getItem('circuitlab_experiments');
-    return expStr ? JSON.parse(expStr) : EXPERIMENTS;
+    if (!expStr) return EXPERIMENTS;
+    const stored = JSON.parse(expStr);
+    
+    // Always use the latest codebase definitions for built-in templates (IDs present in EXPERIMENTS)
+    // but preserve the user's custom-created experiments.
+    const builtInIds = new Set(EXPERIMENTS.map(e => e.id));
+    const customs = stored.filter((e: any) => !builtInIds.has(e.id));
+    return [...EXPERIMENTS, ...customs];
   } catch {
     return EXPERIMENTS;
   }

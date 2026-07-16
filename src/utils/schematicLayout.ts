@@ -197,3 +197,56 @@ export const getSchematicPinCoords = (type: string, pinId: string): { x: number;
 
   return { x: 10, y: 10 };
 };
+
+export const getManhattanPath = (x1: number, y1: number, x2: number, y2: number, nodes?: { x: number; y: number }[]): string => {
+  const pts = [{ x: x1, y: y1 }, ...(nodes || []), { x: x2, y: y2 }];
+  let d = `M ${pts[0].x} ${pts[0].y}`;
+  const r = 12; // corner radius for bends
+
+  for (let i = 0; i < pts.length - 1; i++) {
+    const curr = pts[i];
+    const next = pts[i + 1];
+
+    const dx = next.x - curr.x;
+    const dy = next.y - curr.y;
+
+    if (Math.abs(dx) < 0.5 || Math.abs(dy) < 0.5) {
+      d += ` L ${next.x} ${next.y}`;
+    } else {
+      // Draw an orthogonal bend with rounded corner
+      const midX = next.x;
+      const midY = curr.y;
+
+      const signX = Math.sign(dx);
+      const signY = Math.sign(dy);
+      const rad = Math.min(r, Math.abs(dx) / 2, Math.abs(dy) / 2);
+
+      const turnStartX = midX - signX * rad;
+      const turnStartY = curr.y;
+      const turnEndX = midX;
+      const turnEndY = curr.y + signY * rad;
+
+      d += ` L ${turnStartX} ${turnStartY} Q ${midX} ${midY} ${turnEndX} ${turnEndY} L ${next.x} ${next.y}`;
+    }
+  }
+
+  return d;
+};
+
+export const getBezierPath = (x1: number, y1: number, x2: number, y2: number, nodes?: { x: number; y: number }[]): string => {
+  const pts = [{ x: x1, y: y1 }, ...(nodes || []), { x: x2, y: y2 }];
+  let d = `M ${pts[0].x} ${pts[0].y}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i];
+    const p1 = pts[i + 1];
+    const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+    const sag = Math.max(30, dist * 0.25);
+    const cp1x = p0.x;
+    const cp1y = p0.y + sag;
+    const cp2x = p1.x;
+    const cp2y = p1.y + sag;
+    d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p1.x} ${p1.y}`;
+  }
+  return d;
+};
+

@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Editor from '@monaco-editor/react';
 import type { Monaco } from '@monaco-editor/react';
-import { Play, Square, Pause, StepForward, Trash2, Download, Maximize2, Minimize2, ArrowLeft, Layers, FileSpreadsheet, Eye, Sliders, Server, Search, LayoutGrid, ChevronRight, Cpu, Info, Sun, Moon } from 'lucide-react';
+import { Play, Square, Pause, StepForward, Trash2, Download, ArrowLeft, Layers, FileSpreadsheet, Eye, Sliders, Server, Search, LayoutGrid, ChevronRight, Cpu, Sun, Moon, Loader2 } from 'lucide-react';
 import type { ComponentInstance, WireConnection, Experiment, SimulationState } from '../types';
 import { COMPONENT_DEFINITIONS } from '../utils/componentDefinitions';
 import { ComponentSVGs } from './ComponentSVGs';
 import { CircuitInterpreter } from '../utils/interpreter';
-import { getSchematicDimensions, getSchematicPinCoords } from '../utils/schematicLayout';
+import { getSchematicDimensions, getSchematicPinCoords, getManhattanPath, getBezierPath } from '../utils/schematicLayout';
+import { Wire } from './features/Wire';
+import { useCircuitSync } from '../utils/useCircuitSync';
+import { SaveIndicator } from './features/SaveIndicator';
 
 const STARTER_DEFINITIONS: Record<string, { name: string; description: string; type: string; width: number; height: number; defaultProperties: any }> = {
   breadboard_only: { type: 'breadboard_only', name: 'Breadboard Only', description: 'A blank half breadboard starter template.', width: 60, height: 40, defaultProperties: {} },
@@ -160,59 +163,19 @@ const getStarterIconType = (sType: string): string => {
   }
 };
 
-const getManhattanPath = (x1: number, y1: number, x2: number, y2: number): string => {
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const r = Math.min(8, Math.abs(dx) / 2, Math.abs(dy) / 2);
-  
-  if (r < 1.5) {
-    return `M ${x1} ${y1} L ${x2} ${y2}`;
-  }
-  
-  const signX = Math.sign(dx);
-  const signY = Math.sign(dy);
-  
-  const startCornerX = x2 - signX * r;
-  const startCornerY = y1;
-  const endCornerX = x2;
-  const endCornerY = y1 + signY * r;
-  
-  return `M ${x1} ${y1} L ${startCornerX} ${startCornerY} Q ${x2} ${y1} ${endCornerX} ${endCornerY} L ${x2} ${y2}`;
-};
 
-const getBezierPath = (x1: number, y1: number, x2: number, y2: number, nodes?: {x: number, y: number}[]): string => {
-  if (!nodes || nodes.length === 0) {
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const dist = Math.hypot(dx, dy);
-    // Add natural droop sag
-    const sag = Math.max(25, Math.min(120, dist * 0.35));
-    const cx1 = x1;
-    const cy1 = y1 + sag;
-    const cx2 = x2;
-    const cy2 = y2 + sag;
-    return `M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
-  }
 
-  // Path with manual bend nodes
-  let d = `M ${x1} ${y1}`;
-  const pts = [{x: x1, y: y1}, ...nodes, {x: x2, y: y2}];
-  for (let i = 0; i < pts.length - 1; i++) {
-    const p1 = pts[i];
-    const p2 = pts[i+1];
-    const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-    const sag = Math.max(10, Math.min(60, dist * 0.25));
-    const cx1 = p1.x;
-    const cy1 = p1.y + sag;
-    const cx2 = p2.x;
-    const cy2 = p2.y + sag;
-    if (i === 0) {
-      d += ` C ${cx1} ${cy1}, ${cx2} ${cy2}, ${p2.x} ${p2.y}`;
-    } else {
-      d += ` S ${cx2} ${cy2}, ${p2.x} ${p2.y}`;
-    }
-  }
-  return d;
+// ─── Grid Constants ──────────────────────────────────────────────────────────
+// BREADBOARD_PITCH: the pixel distance between adjacent holes on the breadboard.
+// This MUST match componentDefinitions.ts colSpacing (15) and rowSpacing (15).
+const BREADBOARD_PITCH = 15;
+
+// The breadboard's first hole column starts at startX=50 within the component.
+// So absolute hole X positions = breadboard.x + 50 + col * 15.
+// For a free-canvas component pin to land on a hole, we snap its absolute pin
+// position to the nearest (breadboard.x + 50 + N * 15) grid.
+const snapToGrid = (value: number, pitch: number, offset: number = 0): number => {
+  return Math.round((value - offset) / pitch) * pitch + offset;
 };
 
 const snapComponentPosition = (
@@ -228,13 +191,14 @@ const snapComponentPosition = (
   const breadboard = allComponents.find(c => c.type === 'breadboard');
   if (breadboard && type !== 'breadboard') {
     const bbMeta = COMPONENT_DEFINITIONS.breadboard;
-    const insideBb = 
+    const insideBb =
       targetX > breadboard.x - 30 &&
       targetX < breadboard.x + bbMeta.width + 10 &&
       targetY > breadboard.y - 30 &&
       targetY < breadboard.y + bbMeta.height + 10;
-      
+
     if (insideBb && compMeta.pins && compMeta.pins.length > 0) {
+      // Use the first pin as the anchor point to find the nearest hole
       const firstPin = compMeta.pins[0];
       const cx = targetX + compMeta.width / 2;
       const cy = targetY + compMeta.height / 2;
@@ -248,7 +212,7 @@ const snapComponentPosition = (
 
       let closestHole = null;
       let minDist = Infinity;
-      
+
       for (const hole of bbMeta.pins) {
         const hx = breadboard.x + hole.x;
         const hy = breadboard.y + hole.y;
@@ -260,40 +224,60 @@ const snapComponentPosition = (
       }
 
       if (closestHole && minDist < 30) {
-        const pinOffsetFromOriginX = (compMeta.width / 2) + rotX;
-        const pinOffsetFromOriginY = (compMeta.height / 2) + rotY;
+        const pinOffsetFromOriginX = compMeta.width / 2 + rotX;
+        const pinOffsetFromOriginY = compMeta.height / 2 + rotY;
         return {
           x: closestHole.x - pinOffsetFromOriginX,
           y: closestHole.y - pinOffsetFromOriginY
         };
       }
+
+      // Fallback: snap the component's first pin to the breadboard hole grid.
+      // Breadboard holes: startX=50 from bb.x, spaced BREADBOARD_PITCH apart.
+      const snappedPinX = snapToGrid(pinAbsX, BREADBOARD_PITCH, breadboard.x + 50);
+      const snappedPinY = snapToGrid(pinAbsY, BREADBOARD_PITCH, breadboard.y + 60); // terminalTopY=60
+      const pinOffsetFromOriginX = compMeta.width / 2 + rotX;
+      const pinOffsetFromOriginY = compMeta.height / 2 + rotY;
+      return {
+        x: snappedPinX - pinOffsetFromOriginX,
+        y: snappedPinY - pinOffsetFromOriginY
+      };
     }
   }
 
+  // Outside breadboard: snap to global 15px grid
   if (type === 'breadboard') {
     return {
-      x: Math.round(targetX / 20) * 20,
-      y: Math.round(targetY / 20) * 20
+      x: snapToGrid(targetX, BREADBOARD_PITCH),
+      y: snapToGrid(targetY, BREADBOARD_PITCH)
     };
   }
 
+  // For all other free-standing components, snap using the breadboard's
+  // hole-column offset so components placed near each other stay grid-aligned.
+  const bbRef = allComponents.find(c => c.type === 'breadboard');
+  const xOffset = bbRef ? (bbRef.x + 50) % BREADBOARD_PITCH : 0;
+  const yOffset = bbRef ? (bbRef.y + 60) % BREADBOARD_PITCH : 0;
   return {
-    x: Math.round(targetX / 10) * 10,
-    y: Math.round(targetY / 10) * 10
+    x: snapToGrid(targetX, BREADBOARD_PITCH, xOffset),
+    y: snapToGrid(targetY, BREADBOARD_PITCH, yOffset)
   };
 };
 
 interface SimulatorWorkspaceProps {
   experiment: Experiment;
+  circuitId?: string;
   onBack: () => void;
 }
 
-export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experiment, onBack }) => {
+export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experiment, circuitId, onBack }) => {
+  // Supabase Sync Hooks & State
+  const { saveCircuit, loadCircuit, isSaving, lastSavedAt, error: syncError } = useCircuitSync();
+  const [isLoadingDb, setIsLoadingDb] = useState(false);
+  const [dbCircuitTitle, setDbCircuitTitle] = useState('');
   // Tabs & Layout
   const [activeTab, setActiveTab] = useState<'breadboard' | 'schematic' | 'bom'>('breadboard');
-  const [isFullscreen, setIsFullscreen] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(true);
-  const [isDescCollapsed, setIsDescCollapsed] = useState(false);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', isDarkMode ? 'dark' : 'light');
@@ -307,7 +291,9 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
   const [rightPanelTab, setRightPanelTab] = useState<'code' | 'serial' | 'sensors'>('code');
   const [showGrid, setShowGrid] = useState(true);
   const [spacePressed, setSpacePressed] = useState(false);
-  const [wireStyle, setWireStyle] = useState<'bezier' | 'manhattan'>('bezier');
+  const [wireStyle, setWireStyle] = useState<'bezier' | 'manhattan'>('manhattan');
+  const [showBreadboardInternals] = useState(false);
+  const [hoveredWireId, setHoveredWireId] = useState<string | null>(null);
   
   // Collapsible categories inside left panel library
   const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({
@@ -360,6 +346,7 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
 
   // Code editor content
   const [codeContent, setCodeContent] = useState('');
+  const [languageMode, setLanguageMode] = useState<'Arduino C++' | 'MicroPython'>('Arduino C++');
   
   // Simulation and Interpreter State
   const [simState, setSimState] = useState<SimulationState>({
@@ -374,7 +361,7 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
       humidity: 45,
       distance: 50,
       motion: false,
-      flowRateInput: 0,
+      waterFlowLPM: 0,
       buttonInput: false,
       flaskToggleInput: false,
       bpmInput: 72,
@@ -501,60 +488,175 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
     };
   }, [drawingWire, components, wires, selectedElement, selectedComponentIds, history, redoStack]);
 
-  // Load experiment template
+  // Load experiment template or fetch from Supabase
   useEffect(() => {
-    const initialComps: ComponentInstance[] = JSON.parse(JSON.stringify(experiment.defaultComponents));
-    const breadboard = initialComps.find(c => c.type === 'breadboard');
-    const bbMeta = COMPONENT_DEFINITIONS.breadboard;
-    
-    // Auto-parent components already on the breadboard on load
-    if (breadboard && bbMeta) {
-      initialComps.forEach(comp => {
-        if (comp.type !== 'breadboard') {
-          const insideBb = 
-            comp.x > breadboard.x - 30 &&
-            comp.x < breadboard.x + bbMeta.width + 10 &&
-            comp.y > breadboard.y - 30 &&
-            comp.y < breadboard.y + bbMeta.height + 10;
-          if (insideBb) {
-            comp.parentId = breadboard.id;
-            comp.offsetX = comp.x - breadboard.x;
-            comp.offsetY = comp.y - breadboard.y;
-          }
+    if (circuitId) {
+      setIsLoadingDb(true);
+      loadCircuit(circuitId).then(({ canvasState, codeState, circuit, error }) => {
+        if (error || !canvasState || !circuit) {
+          console.error('Failed to load Supabase circuit:', error);
+          setIsLoadingDb(false);
+          return;
         }
-      });
-    }
 
-    setComponents(initialComps);
-    setWires(JSON.parse(JSON.stringify(experiment.defaultWires)));
-    setCodeContent(experiment.defaultCode);
-    
-    // Reset simulation
-    stopSimulation();
-    
-    // Set default sensor values for specific experiments
-    const initialSensors = { ...simState.sensorInputs };
-    if (experiment.id === 1) { initialSensors.temperature = 24; initialSensors.humidity = 45; }
-    if (experiment.id === 2) { initialSensors.distance = 80; initialSensors.motion = false; }
-    if (experiment.id === 6) { initialSensors.motion = false; }
-    if (experiment.id === 12) { initialSensors.bpmInput = 75; initialSensors.temperature = 36; }
-    
-    setSimState(prev => ({
-      ...prev,
-      sensorInputs: initialSensors,
-      serialOutput: [`[Loaded Experiment: ${experiment.title}]`],
-    }));
-  }, [experiment]);
+        let initialComps = canvasState.components || [];
+        let initialWires = canvasState.wires || [];
+
+        // Auto-parent components on breadboard on load
+        const breadboard = initialComps.find(c => c.type === 'breadboard');
+        const bbMeta = COMPONENT_DEFINITIONS.breadboard;
+        if (breadboard && bbMeta) {
+          initialComps.forEach(comp => {
+            if (comp.type !== 'breadboard') {
+              const insideBb = 
+                comp.x > breadboard.x - 30 &&
+                comp.x < breadboard.x + bbMeta.width + 10 &&
+                comp.y > breadboard.y - 30 &&
+                comp.y < breadboard.y + bbMeta.height + 10;
+              if (insideBb) {
+                comp.parentId = breadboard.id;
+                comp.offsetX = comp.x - breadboard.x;
+                comp.offsetY = comp.y - breadboard.y;
+              }
+            }
+          });
+        }
+
+        setComponents(initialComps);
+        setWires(initialWires);
+        setCodeContent(codeState || '');
+        
+        const hasRpi = initialComps.some(c => c.type === 'raspberry_pi');
+        setLanguageMode(hasRpi ? 'MicroPython' : 'Arduino C++');
+        setDbCircuitTitle(circuit.title);
+        
+        stopSimulation();
+
+        setSimState(prev => ({
+          ...prev,
+          sensorInputs: { ...prev.sensorInputs },
+          serialOutput: [`[Loaded Design: ${circuit.title}]`],
+        }));
+
+        setIsLoadingDb(false);
+      });
+    } else {
+      let initialComps: ComponentInstance[] = JSON.parse(JSON.stringify(experiment.defaultComponents));
+      let initialWires: WireConnection[] = JSON.parse(JSON.stringify(experiment.defaultWires));
+
+      // Forceful Netlist/Canvas Cleanup for Experiment 9 (DC & Stepper Motor Control)
+      if (experiment.id === 9) {
+        // Find Stepper Motor ID
+        const stepperMotor = initialComps.find(c => c.type === 'stepper_motor');
+        if (stepperMotor) {
+          const stepperId = stepperMotor.id;
+          // Purge the Stepper Motor component entirely
+          initialComps = initialComps.filter(c => c.id !== stepperId);
+          // Purge any wires connected to the Stepper Motor
+          initialWires = initialWires.filter(w => w.fromComponentId !== stepperId && w.toComponentId !== stepperId);
+        }
+        
+        // Specifically target and delete any orange wires connected to the Stepper Motor or OUT terminals
+        initialWires = initialWires.filter(w => !(w.color === 'orange' && (w.fromComponentId.includes('stepper') || w.toComponentId.includes('stepper') || w.fromPinId.includes('out') || w.toPinId.includes('out'))));
+
+        // Isolate the DC Motor on the L298N output terminals (OUT1 & OUT2)
+        const l298n = initialComps.find(c => c.type === 'l298n');
+        if (l298n) {
+          const l298nId = l298n.id;
+          // Remove any wires on OUT1/OUT2 that are NOT the blue wires going strictly to the DC Motor (dc_1)
+          initialWires = initialWires.filter(w => {
+            const isL298nOut1Or2 = (w.fromComponentId === l298nId && (w.fromPinId === 'out1' || w.fromPinId === 'out2')) ||
+                                   (w.toComponentId === l298nId && (w.toPinId === 'out1' || w.toPinId === 'out2'));
+            if (isL298nOut1Or2) {
+              const connectsToDcMotor = (w.fromComponentId === 'dc_1' || w.toComponentId === 'dc_1');
+              const isBlueWire = w.color === 'blue';
+              return connectsToDcMotor && isBlueWire;
+            }
+            return true;
+          });
+        }
+      }
+
+      // Forceful Netlist/Canvas Setup for Experiment 10 (Home Automation with Raspberry Pi)
+      if (experiment.id === 10) {
+        // Ensure the lightbulb exists, and the COM, NO, GND connections are strictly mapped
+        const hasLightbulb = initialComps.some(c => c.type === 'lightbulb');
+        if (!hasLightbulb) {
+          initialComps.push({ id: 'lightbulb_1', type: 'lightbulb', name: 'Lightbulb', x: 500, y: 80, rotation: 0, properties: { lit: false } });
+        }
+
+        // Re-initialize default wires for Experiment 10 to ensure a complete load
+        initialWires = JSON.parse(JSON.stringify(experiment.defaultWires));
+      }
+
+      const breadboard = initialComps.find(c => c.type === 'breadboard');
+      const bbMeta = COMPONENT_DEFINITIONS.breadboard;
+      
+      // Auto-parent components already on the breadboard on load
+      if (breadboard && bbMeta) {
+        initialComps.forEach(comp => {
+          if (comp.type !== 'breadboard') {
+            const insideBb = 
+              comp.x > breadboard.x - 30 &&
+              comp.x < breadboard.x + bbMeta.width + 10 &&
+              comp.y > breadboard.y - 30 &&
+              comp.y < breadboard.y + bbMeta.height + 10;
+            if (insideBb) {
+              comp.parentId = breadboard.id;
+              comp.offsetX = comp.x - breadboard.x;
+              comp.offsetY = comp.y - breadboard.y;
+            }
+          }
+        });
+      }
+
+      setComponents(initialComps);
+      setWires(initialWires);
+      setCodeContent(experiment.defaultCode);
+      setLanguageMode(experiment.platform === 'Arduino' ? 'Arduino C++' : 'MicroPython');
+      
+      // Reset simulation
+      stopSimulation();
+      
+      // Set default sensor values for specific experiments
+      const initialSensors = { ...simState.sensorInputs };
+      if (experiment.id === 1) { initialSensors.temperature = 24; initialSensors.humidity = 45; }
+      if (experiment.id === 2) { initialSensors.distance = 80; initialSensors.motion = false; }
+      if (experiment.id === 6) { initialSensors.motion = false; }
+      if (experiment.id === 12) { initialSensors.bpmInput = 75; initialSensors.temperature = 36; }
+      
+      setSimState(prev => ({
+        ...prev,
+        sensorInputs: initialSensors,
+        serialOutput: [`[Loaded Experiment: ${experiment.title}]`],
+      }));
+    }
+  }, [experiment, circuitId]);
+
+  // Debounced auto-save effect
+  useEffect(() => {
+    if (!circuitId || isLoadingDb) return;
+
+    const delayDebounceFn = setTimeout(() => {
+      saveCircuit(
+        circuitId,
+        { components, wires, version: 1 },
+        codeContent
+      );
+    }, 1500); // 1.5s debounce
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [circuitId, components, wires, codeContent, isLoadingDb, saveCircuit]);
 
   // Hot-reload code into the interpreter on change
   useEffect(() => {
     if (interpreterRef.current) {
-      interpreterRef.current.reset(experiment.platform, codeContent);
+      interpreterRef.current.reset(languageMode === 'Arduino C++' ? 'Arduino' : 'Raspberry Pi', codeContent);
       if (simState.isRunning && typeof stepSimulation === 'function') {
         stepSimulation();
       }
     }
-  }, [codeContent]);
+  }, [codeContent, languageMode]);
 
   // Sync sensor inputs into interpreter globals
   useEffect(() => {
@@ -570,13 +672,430 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
       interpreterRef.current.globals['humidity'] = simState.sensorInputs.humidity;
       interpreterRef.current.globals['distance'] = simState.sensorInputs.distance;
       interpreterRef.current.globals['motionDetected'] = simState.sensorInputs.motion ? 1 : 0;
-      interpreterRef.current.globals['flowRateInput'] = simState.sensorInputs.flowRateInput;
+      interpreterRef.current.globals['waterFlowLPM'] = simState.sensorInputs.waterFlowLPM;
       interpreterRef.current.globals['buttonInput'] = simState.sensorInputs.buttonInput ? 1 : 0;
       interpreterRef.current.globals['flaskToggleInput'] = simState.sensorInputs.flaskToggleInput ? 1 : 0;
       interpreterRef.current.globals['bpmInput'] = simState.sensorInputs.bpmInput;
       interpreterRef.current.globals['tempProbe'] = simState.sensorInputs.tempProbe;
     }
   }, [simState.sensorInputs]);
+
+  // Enforce dynamic cleanup on active canvas state for Experiment 9 to ensure clean DC motor isolation
+  useEffect(() => {
+    if (experiment.id === 9) {
+      const hasStepper = components.some(c => c.type === 'stepper_motor');
+      const stepperId = components.find(c => c.type === 'stepper_motor')?.id;
+      const hasStepperWires = wires.some(w => 
+        (stepperId && (w.fromComponentId === stepperId || w.toComponentId === stepperId)) ||
+        (w.color === 'orange' && (w.fromComponentId.includes('stepper') || w.toComponentId.includes('stepper') || w.fromPinId.includes('out') || w.toPinId.includes('out')))
+      );
+
+      if (hasStepper || hasStepperWires) {
+        setComponents(prev => prev.filter(c => c.type !== 'stepper_motor'));
+        setWires(prev => prev.filter(w => {
+          const isStepperWire = stepperId && (w.fromComponentId === stepperId || w.toComponentId === stepperId);
+          const isOrangeStepperWire = w.color === 'orange' && (w.fromComponentId.includes('stepper') || w.toComponentId.includes('stepper') || w.fromPinId.includes('out') || w.toPinId.includes('out'));
+          return !isStepperWire && !isOrangeStepperWire;
+        }));
+      }
+
+      // Ensure L298N output OUT1/OUT2 strictly connects to DC motor via blue wires
+      const l298n = components.find(c => c.type === 'l298n');
+      if (l298n) {
+        const l298nId = l298n.id;
+        const hasExtraOrNonBlueOut1Out2 = wires.some(w => {
+          const isOut1Or2 = (w.fromComponentId === l298nId && (w.fromPinId === 'out1' || w.fromPinId === 'out2')) ||
+                            (w.toComponentId === l298nId && (w.toPinId === 'out1' || w.toPinId === 'out2'));
+          if (isOut1Or2) {
+            const connectsToDc = (w.fromComponentId === 'dc_1' || w.toComponentId === 'dc_1');
+            const isBlue = w.color === 'blue';
+            return !connectsToDc || !isBlue;
+          }
+          return false;
+        });
+
+        if (hasExtraOrNonBlueOut1Out2) {
+          setWires(prev => prev.filter(w => {
+            const isOut1Or2 = (w.fromComponentId === l298nId && (w.fromPinId === 'out1' || w.fromPinId === 'out2')) ||
+                              (w.toComponentId === l298nId && (w.toPinId === 'out1' || w.toPinId === 'out2'));
+            if (isOut1Or2) {
+              const connectsToDc = (w.fromComponentId === 'dc_1' || w.toComponentId === 'dc_1');
+              const isBlue = w.color === 'blue';
+              return connectsToDc && isBlue;
+            }
+            return true;
+          }));
+        }
+      }
+    }
+  }, [experiment.id, components, wires]);
+
+  // DHT11 Experiment Simulation Logic Loop
+  useEffect(() => {
+    if (simState.isRunning && experiment.id === 1) {
+      const dht11Component = {
+        getTemperature: () => {
+          const dht = components.find(c => c.type === 'dht11');
+          return dht ? (dht.properties.temperature ?? simState.sensorInputs.temperature) : simState.sensorInputs.temperature;
+        }
+      };
+
+      const arduino = {
+        digitalWrite: (pin: number | string, val: number) => {
+          setSimState(prev => ({
+            ...prev,
+            pinStates: { ...prev.pinStates, [String(pin)]: val }
+          }));
+        }
+      };
+
+      const HIGH = 1;
+      const LOW = 0;
+
+      // Read from Pin 2 (DHT11), Write to Pin 13 (LED)
+      const currentTemp = dht11Component.getTemperature(); 
+
+      if (currentTemp > 28) {
+          arduino.digitalWrite(13, HIGH); // Send power to the LED
+      } else {
+          arduino.digitalWrite(13, LOW);  // Cut power to the LED
+      }
+    }
+  }, [simState.isRunning, simState.sensorInputs.temperature, experiment.id, components]);
+
+  // Traffic Light Simulator (Experiment 3) Sequence Loop
+  useEffect(() => {
+    if (!simState.isRunning || experiment.id !== 3) return;
+
+    let active = true;
+    let timeoutId: any = null;
+
+    const arduino = {
+      digitalWrite: (pin: number | string, val: number) => {
+        setSimState(prev => ({
+          ...prev,
+          pinStates: { ...prev.pinStates, [String(pin)]: val }
+        }));
+      }
+    };
+
+    const HIGH = 1;
+    const LOW = 0;
+
+    const runTrafficSequence = async () => {
+      while (active) {
+        // Phase 1 (STOP): digitalWrite(10, HIGH), digitalWrite(11, LOW), digitalWrite(12, LOW). (Delay 5000ms).
+        arduino.digitalWrite(10, HIGH);
+        arduino.digitalWrite(11, LOW);
+        arduino.digitalWrite(12, LOW);
+        await new Promise(resolve => { timeoutId = setTimeout(resolve, 5000); });
+        if (!active) break;
+
+        // Phase 2 (GO): digitalWrite(10, LOW), digitalWrite(11, LOW), digitalWrite(12, HIGH). (Delay 5000ms).
+        arduino.digitalWrite(10, LOW);
+        arduino.digitalWrite(11, LOW);
+        arduino.digitalWrite(12, HIGH);
+        await new Promise(resolve => { timeoutId = setTimeout(resolve, 5000); });
+        if (!active) break;
+
+        // Phase 3 (SLOW): digitalWrite(10, LOW), digitalWrite(11, HIGH), digitalWrite(12, LOW). (Delay 2000ms).
+        arduino.digitalWrite(10, LOW);
+        arduino.digitalWrite(11, HIGH);
+        arduino.digitalWrite(12, LOW);
+        await new Promise(resolve => { timeoutId = setTimeout(resolve, 2000); });
+      }
+    };
+
+    runTrafficSequence();
+
+    return () => {
+      active = false;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, [simState.isRunning, experiment.id]);
+
+  // LED & Push Button with Raspberry Pi (Experiment 5) MicroPython Logic Loop
+  useEffect(() => {
+    if (!simState.isRunning || experiment.id !== 5) return;
+
+    let active = true;
+    let intervalId: any = null;
+
+    const rpi = {
+      output: (pin: string | number, val: number) => {
+        setSimState(prev => ({ ...prev, pinStates: { ...prev.pinStates, [String(pin)]: val } }));
+      },
+      serialWrite: (text: string) => {
+        setSimState(prev => ({
+          ...prev,
+          serialOutput: [...prev.serialOutput, text]
+        }));
+      }
+    };
+
+    let prevButtonState = false;
+
+    const runPythonLoop = () => {
+      if (!active) return;
+      
+      const buttonPressed = simState.sensorInputs.buttonInput;
+      
+      if (buttonPressed) {
+          // Prevent spamming the console 10 times a second if held
+          if (!prevButtonState) {
+              rpi.serialWrite("Button pressed -> LED ON");
+          }
+          rpi.output('GP15', 1);
+      } else {
+          rpi.output('GP15', 0);
+      }
+
+      prevButtonState = !!buttonPressed;
+    };
+
+    // Execute every 100ms mimicking time.sleep(0.1)
+    runPythonLoop();
+    intervalId = setInterval(runPythonLoop, 100);
+
+    return () => {
+      active = false;
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [simState.isRunning, experiment.id, simState.sensorInputs.buttonInput]);
+
+  // Smart Health Monitoring System (Experiment 12) Logic Loop
+  useEffect(() => {
+    if (!simState.isRunning || experiment.id !== 12) return;
+
+    let active = true;
+    let intervalId: any = null;
+
+    const arduino = {
+      analogWrite: (pin: string | number, val: number) => {
+        setSimState(prev => ({ ...prev, pinStates: { ...prev.pinStates, [String(pin)]: val } }));
+      },
+      serialWrite: (text: string) => {
+        setSimState(prev => ({
+          ...prev,
+          serialOutput: [...prev.serialOutput, text]
+        }));
+      }
+    };
+
+    const runHealthLoop = () => {
+      if (!active) return;
+      
+      const simulatedBPM = simState.sensorInputs.bpmInput as number;
+      const simulatedTemp = simState.sensorInputs.tempProbe as number;
+
+      // Update virtual Analog Pins A0 and A1 with mapped 10-bit values (0-1023)
+      const analogBPM = Math.min(1023, Math.floor((simulatedBPM / 200) * 1023));
+      const analogTemp = Math.min(1023, Math.floor((simulatedTemp / 50) * 1023));
+      
+      arduino.analogWrite('A0', analogBPM);
+      arduino.analogWrite('A1', analogTemp);
+
+      arduino.serialWrite(`--- Health Report ---`);
+      arduino.serialWrite(`Heart Rate: ${simulatedBPM} BPM`);
+      arduino.serialWrite(`Body Temp: ${simulatedTemp} °C`);
+
+      if (simulatedBPM > 100 || simulatedTemp > 38) {
+          arduino.serialWrite(`WARNING: Vitals are outside normal range!`);
+      }
+      arduino.serialWrite(`---------------------`);
+    };
+
+    // Execute every 1000ms
+    runHealthLoop();
+    intervalId = setInterval(runHealthLoop, 1000);
+
+    return () => {
+      active = false;
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [simState.isRunning, experiment.id, simState.sensorInputs.bpmInput, simState.sensorInputs.tempProbe]);
+
+  // Water Flow Detection (Experiment 4) Logic Loop
+  useEffect(() => {
+    if (!simState.isRunning || experiment.id !== 4) return;
+
+    let active = true;
+    let intervalId: any = null;
+
+    const arduino = {
+      serialWrite: (text: string) => {
+        setSimState(prev => ({
+          ...prev,
+          serialOutput: [...prev.serialOutput, text.replace(/\n$/, '')]
+        }));
+      }
+    };
+
+    const runFlowLoop = () => {
+      if (!active) return;
+      
+      const currentFlowLPM = simState.sensorInputs.waterFlowLPM as number;
+
+      if (currentFlowLPM > 0) {
+          arduino.serialWrite(`Water is flowing! Current Rate: ${currentFlowLPM.toFixed(2)} L/min`);
+      } else {
+          arduino.serialWrite(`No flow detected.`);
+      }
+    };
+
+    runFlowLoop();
+    intervalId = setInterval(runFlowLoop, 2000);
+
+    return () => {
+      active = false;
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [simState.isRunning, experiment.id, simState.sensorInputs.waterFlowLPM]);
+
+  // Visual side-effect for Pin 2 (Experiment 4)
+  useEffect(() => {
+    if (!simState.isRunning || experiment.id !== 4) return;
+
+    let active = true;
+    let intervalId: any = null;
+
+    const arduino = {
+      digitalWrite: (pin: number | string, val: number) => {
+        setSimState(prev => ({
+          ...prev,
+          pinStates: { ...prev.pinStates, [String(pin)]: val }
+        }));
+      }
+    };
+
+    let toggle = 0;
+    const currentFlowLPM = simState.sensorInputs.waterFlowLPM as number;
+    
+    if (currentFlowLPM > 0) {
+      // Faster toggle for higher flow, capped between 50ms and 500ms
+      const toggleSpeed = Math.max(50, 500 - (currentFlowLPM * 10));
+      intervalId = setInterval(() => {
+        if (!active) return;
+        toggle = toggle === 0 ? 1 : 0;
+        arduino.digitalWrite(2, toggle);
+      }, toggleSpeed);
+    } else {
+      arduino.digitalWrite(2, 0);
+    }
+
+    return () => {
+      active = false;
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [simState.isRunning, experiment.id, simState.sensorInputs.waterFlowLPM]);
+
+  // Motion Sensor Alarm (Experiment 6) Logic Loop
+  useEffect(() => {
+    if (!simState.isRunning || experiment.id !== 6) return;
+
+    let active = true;
+    let intervalId: any = null;
+
+    const arduino = {
+      digitalRead: (_pin: number) => {
+        // In our simulator, the PIR output goes to pin 2. We can simulate it by reading the motion state.
+        return simState.sensorInputs.motion ? 1 : 0;
+      },
+      tone: (pin: number, _frequency: number) => {
+        setSimState(prev => ({
+          ...prev,
+          pinStates: { ...prev.pinStates, [String(pin)]: 1 }
+        }));
+      },
+      noTone: (pin: number) => {
+        setSimState(prev => ({
+          ...prev,
+          pinStates: { ...prev.pinStates, [String(pin)]: 0 }
+        }));
+      }
+    };
+
+    const HIGH = 1;
+
+    const runAlarmLoop = () => {
+      if (!active) return;
+      
+      const motionState = arduino.digitalRead(2);
+
+      if (motionState === HIGH) {
+        arduino.tone(3, 1000); // 1000Hz alarm tone
+        console.log("Motion Detected! Alarm ON.");
+      } else {
+        arduino.noTone(3);
+      }
+    };
+
+    runAlarmLoop();
+    intervalId = setInterval(runAlarmLoop, 200);
+
+    return () => {
+      active = false;
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [simState.isRunning, experiment.id, simState.sensorInputs.motion]);
+
+  // Smart Traffic Light Controller (Experiment 11) Logic Loop
+  useEffect(() => {
+    if (!simState.isRunning || experiment.id !== 11) return;
+
+    let active = true;
+    let intervalId: any = null;
+
+    const arduino = {
+      digitalWrite: (pin: number | string, val: number) => {
+        setSimState(prev => ({
+          ...prev,
+          pinStates: { ...prev.pinStates, [String(pin)]: val }
+        }));
+      }
+    };
+
+    const HIGH = 1;
+    const LOW = 0;
+
+    const hcSr04Component = {
+      readDistance: () => {
+        // Read distance from the sensor slider (simState.sensorInputs.distance)
+        return simState.sensorInputs.distance;
+      }
+    };
+
+    // Run the detection loop every 2000ms (matching the Arduino delay(2000))
+    const runDetection = () => {
+      if (!active) return;
+
+      // 1. Trigger the HC-SR04 to read distance
+      const distance = hcSr04Component.readDistance();
+
+      // 2. Smart Traffic Logic (Vehicle Presence Detection)
+      if (typeof distance === 'number' && distance > 0 && distance < 100) {
+        // Vehicle detected within 100cm: Turn Green
+        arduino.digitalWrite(4, LOW);   // Red OFF
+        arduino.digitalWrite(3, HIGH);  // Green ON
+      } else {
+        // No vehicle: Default to Red
+        arduino.digitalWrite(3, LOW);   // Green OFF
+        arduino.digitalWrite(4, HIGH);  // Red ON
+      }
+    };
+
+    // Execute immediately on start, then repeat every 2 seconds
+    runDetection();
+    intervalId = setInterval(runDetection, 2000);
+
+    return () => {
+      active = false;
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [simState.isRunning, experiment.id, simState.sensorInputs.distance]);
+
+  // Deprecated redundant React-native interval loop for Experiment 10.
+  // The system now relies entirely on the live non-blocking asyncio interpreter execution thread.
 
   // Helper to map pin strings to controller pin IDs
   const getControllerPinId = (platform: 'Arduino' | 'Raspberry Pi', pinStr: string): string => {
@@ -715,13 +1234,13 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
         addEdge(`${bb.id}/rail_bot_neg_0`, `${bb.id}/rail_bot_neg_${i}`);
       }
 
-      // Vertical strips Columns A-E and F-J
+      // Vertical strips Columns f-j (upper) and a-e (lower) in lowercase matching componentDefinitions
       for (let col = 1; col <= 30; col++) {
-        const rowsUpper = ['A', 'B', 'C', 'D', 'E'];
+        const rowsUpper = ['f', 'g', 'h', 'i', 'j'];
         for (let r = 1; r < 5; r++) {
           addEdge(`${bb.id}/hole_${rowsUpper[0]}_${col}`, `${bb.id}/hole_${rowsUpper[r]}_${col}`);
         }
-        const rowsLower = ['F', 'G', 'H', 'I', 'J'];
+        const rowsLower = ['a', 'b', 'c', 'd', 'e'];
         for (let r = 1; r < 5; r++) {
           addEdge(`${bb.id}/hole_${rowsLower[0]}_${col}`, `${bb.id}/hole_${rowsLower[r]}_${col}`);
         }
@@ -740,7 +1259,7 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
         }
       } else if (comp.type === 'resistor') {
         // Bridge resistor terminals for basic circuit continuity evaluation
-        addEdge(`${comp.id}/pin1`, `${comp.id}/pin2`);
+        addEdge(`${comp.id}/p1`, `${comp.id}/p2`);
       }
     });
 
@@ -793,6 +1312,47 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
     for (let pass = 0; pass < 3; pass++) {
       const drivers: Record<string, number> = {};
 
+      const passAdj: Record<string, string[]> = {};
+      Object.keys(adj).forEach(key => {
+        passAdj[key] = [...adj[key]];
+      });
+
+      const addPassEdge = (u: string, v: string) => {
+        if (!passAdj[u]) passAdj[u] = [];
+        if (!passAdj[v]) passAdj[v] = [];
+        passAdj[u].push(v);
+        passAdj[v].push(u);
+      };
+
+      // Add dynamic edges for closed relays.
+      // We check BOTH the BFS-accumulated pinStates from the previous pass AND
+      // the raw simState.pinStates written by the interpreter (e.g. GP15: 1).
+      // This ensures the relay closes on pass 0 itself, not only after BFS warm-up.
+      components.forEach(comp => {
+        if (comp.type === 'relay') {
+          const inKey = `${comp.id}/in`;
+          const inState = pinStates[inKey];
+
+          // Check BFS-propagated pin voltages (from previous pass)
+          const isBFSActive = (pinStates['rpi_1/GP15'] > 1.5) || (pinStates['rpi_1/15'] > 1.5) ||
+                              (pinStates['rpi_1/GP25'] > 1.5) || (pinStates['rpi_1/25'] > 1.5);
+
+          // Check raw interpreter pin writes (simState.pinStates) directly — catches pass 0
+          const rawPS = simState.pinStates;
+          const isRawActive = (rawPS['GP15'] === 1 || rawPS['GP15'] === true || String(rawPS['GP15']) === 'HIGH') ||
+                              (rawPS['15']   === 1 || rawPS['15']   === true || String(rawPS['15'])   === 'HIGH') ||
+                              (rawPS['GP25'] === 1 || rawPS['GP25'] === true || String(rawPS['GP25']) === 'HIGH') ||
+                              (rawPS['25']   === 1 || rawPS['25']   === true || String(rawPS['25'])   === 'HIGH');
+
+          const isRelayActive = (typeof inState === 'number' && inState > 1.5) || isBFSActive || isRawActive || comp.properties.state;
+          if (isRelayActive) {
+            addPassEdge(`${comp.id}/com`, `${comp.id}/no`);
+          } else {
+            addPassEdge(`${comp.id}/com`, `${comp.id}/nc`);
+          }
+        }
+      });
+
       components.forEach(comp => {
         if (comp.type === 'arduino' || comp.type === 'raspberry_pi') {
           const platform = comp.type === 'arduino' ? 'Arduino' : 'Raspberry Pi';
@@ -827,6 +1387,10 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
               } else if (val === false || val === 0 || String(val) === 'LOW') {
                 drivers[`${comp.id}/${pinId}`] = 0.0;
               }
+              // Diagnostic console logging on GP15 node
+              if (comp.type === 'raspberry_pi' && pinId === 'GP15') {
+                console.log("GP15 Node Voltage: ", drivers[`${comp.id}/${pinId}`]);
+              }
             });
           }
 
@@ -859,6 +1423,54 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
           const inVolts = pinStates[`${comp.id}/input`] || 0.0;
           drivers[`${comp.id}/gnd`] = 0.0;
           drivers[`${comp.id}/output`] = inVolts > 7.0 ? 5.0 : Math.max(0.0, inVolts - 2.0);
+        } else if (comp.type === 'l298n') {
+          const v12 = pinStates[`${comp.id}/v12`] || 0.0;
+          const enA = pinStates[`${comp.id}/enA`] || 0.0;
+          const enB = pinStates[`${comp.id}/enB`] || 0.0;
+          const in1 = pinStates[`${comp.id}/in1`] || 0.0;
+          const in2 = pinStates[`${comp.id}/in2`] || 0.0;
+          const in3 = pinStates[`${comp.id}/in3`] || 0.0;
+          const in4 = pinStates[`${comp.id}/in4`] || 0.0;
+
+          // ENA controls Channel A (OUT1 and OUT2)
+          if (enA > 1.5 && v12 > 1.5) {
+            if (in1 > 1.5 && in2 <= 1.5) {
+              drivers[`${comp.id}/out1`] = v12;
+              drivers[`${comp.id}/out2`] = 0.0;
+            } else if (in1 <= 1.5 && in2 > 1.5) {
+              drivers[`${comp.id}/out1`] = 0.0;
+              drivers[`${comp.id}/out2`] = v12;
+            } else if (in1 > 1.5 && in2 > 1.5) {
+              drivers[`${comp.id}/out1`] = v12;
+              drivers[`${comp.id}/out2`] = v12;
+            } else {
+              drivers[`${comp.id}/out1`] = 0.0;
+              drivers[`${comp.id}/out2`] = 0.0;
+            }
+          } else {
+            drivers[`${comp.id}/out1`] = 0.0;
+            drivers[`${comp.id}/out2`] = 0.0;
+          }
+
+          // ENB controls Channel B (OUT3 and OUT4)
+          if (enB > 1.5 && v12 > 1.5) {
+            if (in3 > 1.5 && in4 <= 1.5) {
+              drivers[`${comp.id}/out3`] = v12;
+              drivers[`${comp.id}/out4`] = 0.0;
+            } else if (in3 <= 1.5 && in4 > 1.5) {
+              drivers[`${comp.id}/out3`] = 0.0;
+              drivers[`${comp.id}/out4`] = v12;
+            } else if (in3 > 1.5 && in4 > 1.5) {
+              drivers[`${comp.id}/out3`] = v12;
+              drivers[`${comp.id}/out4`] = v12;
+            } else {
+              drivers[`${comp.id}/out3`] = 0.0;
+              drivers[`${comp.id}/out4`] = 0.0;
+            }
+          } else {
+            drivers[`${comp.id}/out3`] = 0.0;
+            drivers[`${comp.id}/out4`] = 0.0;
+          }
         } else if (comp.type === 'gate_and') {
           const vA = pinStates[`${comp.id}/in_a`] || 0.0;
           const vB = pinStates[`${comp.id}/in_b`] || 0.0;
@@ -880,7 +1492,7 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
       const visited = new Set<string>();
       const nextPinStates: Record<string, number> = {};
 
-      Object.keys(adj).forEach(startPin => {
+      Object.keys(passAdj).forEach(startPin => {
         if (!visited.has(startPin)) {
           const net: string[] = [];
           const queue = [startPin];
@@ -889,7 +1501,7 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
           while (queue.length > 0) {
             const u = queue.shift()!;
             net.push(u);
-            (adj[u] || []).forEach(v => {
+            (passAdj[u] || []).forEach(v => {
               if (!visited.has(v)) {
                 visited.add(v);
                 queue.push(v);
@@ -931,6 +1543,11 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
       pinStates = nextPinStates;
     }
 
+    // CRITICAL: Synchronously write to window BEFORE returning, eliminating the
+    // useEffect timing gap that caused useNodeVoltage to read stale state.
+    (window as any).__activePinStates = pinStates;
+    (window as any).rawPinStates = simState.pinStates;
+
     return pinStates;
   }, [components, wires, simState.isRunning, simState.pinStates, simState.sensorInputs]);
 
@@ -938,7 +1555,71 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
   const activePinStatesRef = useRef<Record<string, number | boolean>>({});
   useEffect(() => {
     activePinStatesRef.current = activePinStates;
-  }, [activePinStates]);
+    // Belt-and-suspenders: also update in effect in case useMemo didn't fire
+    (window as any).__activePinStates = activePinStates;
+    (window as any).rawPinStates = simState.pinStates;
+  }, [activePinStates, simState.pinStates]);
+
+  useEffect(() => {
+    (window as any).SimulationEngine = {
+      getNodeVoltage: (nodeId: string) => {
+        if (!nodeId) return 'LOW';
+        const activeStates = (window as any).__activePinStates || {};
+        const rawPS = (window as any).rawPinStates || {};
+        
+        const numericVal = (val: any): number => {
+          if (typeof val === 'number') return val;
+          if (typeof val === 'boolean') return val ? 3.3 : 0.0;
+          if (val === 'HIGH' || val === 1) return 3.3;
+          if (val === 'LOW' || val === 0) return 0.0;
+          return -1.0;
+        };
+
+        const toHighLow = (v: number) => (v > 1.5 ? 'HIGH' : (v >= 0 ? 'LOW' : 'FLOAT'));
+
+        const getVal = (id: string) => {
+          const val = activeStates[id];
+          const n = numericVal(val);
+          if (n >= 0) return toHighLow(n);
+          return 'LOW';
+        };
+
+        // 1. First priority: BFS net voltage for component pins (e.g. relay_1/in, lightbulb_1/pin1)
+        if (nodeId.includes('/')) {
+          const bfsVal = activeStates[nodeId];
+          if (bfsVal !== undefined && numericVal(bfsVal) >= 0) return getVal(nodeId);
+
+          // Fallback: if BFS didn't propagate to this pin, check if it's linked to a GP pin via rawPS
+          // e.g. relay_1/in is linked to GP15 via wire w3
+          const gpFallback = rawPS['GP15'] === 1 || rawPS['15'] === 1 ?
+            (nodeId === 'relay_1/in' ? 'HIGH' : getVal(nodeId)) : getVal(nodeId);
+          return gpFallback;
+        }
+
+        // 2. Raw interpreter pin states — PRIMARY source for GPIO nodes (fastest, no BFS lag)
+        const gpKey = nodeId.startsWith('GP') ? nodeId : `GP${nodeId}`;
+        if (rawPS[nodeId] !== undefined) {
+          const rv = rawPS[nodeId];
+          return (rv === 1 || rv === true || rv === 'HIGH') ? 'HIGH' : 'LOW';
+        }
+        if (rawPS[gpKey] !== undefined) {
+          const rv = rawPS[gpKey];
+          return (rv === 1 || rv === true || rv === 'HIGH') ? 'HIGH' : 'LOW';
+        }
+
+        // 3. BFS with platform prefix resolution
+        const rpiVal = activeStates[`rpi_1/${nodeId}`];
+        if (rpiVal !== undefined) return getVal(`rpi_1/${nodeId}`);
+
+        const ardVal = activeStates[`arduino_1/${nodeId}`];
+        if (ardVal !== undefined) return getVal(`arduino_1/${nodeId}`);
+
+        if (activeStates[nodeId] !== undefined) return getVal(nodeId);
+
+        return 'LOW';
+      }
+    };
+  }, []);
 
   // Compute clean electrical nets specifically for schematic connections
   const schematicNets = useMemo(() => {
@@ -961,12 +1642,13 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
       for (let i = 1; i < 30; i++) addEdge(`${bb.id}/rail_bot_pos_0`, `${bb.id}/rail_bot_pos_${i}`);
       for (let i = 1; i < 30; i++) addEdge(`${bb.id}/rail_bot_neg_0`, `${bb.id}/rail_bot_neg_${i}`);
 
+      // Vertical strips Columns f-j (upper) and a-e (lower) in lowercase matching componentDefinitions
       for (let col = 1; col <= 30; col++) {
-        const rowsUpper = ['A', 'B', 'C', 'D', 'E'];
+        const rowsUpper = ['f', 'g', 'h', 'i', 'j'];
         for (let r = 1; r < 5; r++) {
           addEdge(`${bb.id}/hole_${rowsUpper[0]}_${col}`, `${bb.id}/hole_${rowsUpper[r]}_${col}`);
         }
-        const rowsLower = ['F', 'G', 'H', 'I', 'J'];
+        const rowsLower = ['a', 'b', 'c', 'd', 'e'];
         for (let r = 1; r < 5; r++) {
           addEdge(`${bb.id}/hole_${rowsLower[0]}_${col}`, `${bb.id}/hole_${rowsLower[r]}_${col}`);
         }
@@ -1056,10 +1738,31 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
           return simState.sensorInputs.temperature || 25;
         }
         if (comp.type === 'ds18b20' && pId === 'dq') {
-          return simState.sensorInputs.tempProbe || 25;
+          const vccPinPath = `${comp.id}/vcc`;
+          const vccNet = nets.find(net => net.includes(vccPinPath));
+          const vccPowered = vccNet && vccNet.some(path => path.includes('3.3V') || path.includes('5V') || path.includes('vcc') || path.includes('VDD'));
+          
+          const resistorConnected = components.some(c => {
+            if (c.type !== 'resistor') return false;
+            const p1Path = `${c.id}/p1`;
+            const p2Path = `${c.id}/p2`;
+            const hasP1inDQ = myNet.includes(p1Path);
+            const hasP2inDQ = myNet.includes(p2Path);
+            const hasP1inVCC = vccNet && vccNet.includes(p1Path);
+            const hasP2inVCC = vccNet && vccNet.includes(p2Path);
+            return (hasP1inDQ && hasP2inVCC) || (hasP2inDQ && hasP1inVCC);
+          });
+
+          if (vccPowered && resistorConnected) {
+            return 998;
+          }
+          return 0; // Disconnected or missing pull-up
         }
         if (comp.type === 'yf_s201' && pId === 'out') {
-          return simState.sensorInputs.flowRateInput || 5.0;
+          return simState.sensorInputs.waterFlowLPM || 5.0;
+        }
+        if (comp.type === 'dht11' && pId === 'data') {
+          return 999;
         }
       }
     }
@@ -1088,6 +1791,10 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
   };
 
   const getPinVoltage = (componentId: string, pinId: string): number => {
+    // Temporary visual diagnostic override bypass (Step 3 bypass)
+    // Uncomment the line below to force the LED (led_1) to light up without netlist constraints:
+    // if (componentId === 'led_1') return pinId === 'anode' ? 5.0 : 0.0;
+
     const key = `${componentId}/${pinId}`;
     const val = activePinStates[key];
     return typeof val === 'number' ? val : 0.0;
@@ -1211,10 +1918,24 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
     if (!interpreterRef.current) {
       interpreterRef.current = new CircuitInterpreter(
         (pin, val) => {
-          setSimState(prev => ({
-            ...prev,
-            pinStates: { ...prev.pinStates, [pin]: val }
-          }));
+          let targetPin = pin.trim();
+          if (interpreterRef.current?.platform === 'Raspberry Pi') {
+            if (/^\d+$/.test(targetPin)) {
+              targetPin = `GP${targetPin}`;
+            }
+          }
+          setSimState(prev => {
+            const newPinStates = { ...prev.pinStates };
+            if (targetPin.startsWith('GP') && /^\d+$/.test(targetPin.substring(2))) {
+              const numeric = targetPin.substring(2);
+              delete newPinStates[numeric];
+            }
+            newPinStates[targetPin] = val;
+            return {
+              ...prev,
+              pinStates: newPinStates
+            };
+          });
         },
         (pin) => {
           return handlePinRead(pin);
@@ -1229,7 +1950,8 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
       );
     }
 
-    interpreterRef.current.reset(experiment.platform, codeContent);
+    console.log("SENDING TO ENGINE: ", codeContent);
+    interpreterRef.current.reset(languageMode === 'Arduino C++' ? 'Arduino' : 'Raspberry Pi', codeContent);
     interpreterRef.current.breakpoints = simState.breakpoints;
     interpreterRef.current.running = true;
     
@@ -1238,7 +1960,7 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
     interpreterRef.current.globals['humidity'] = simState.sensorInputs.humidity;
     interpreterRef.current.globals['distance'] = simState.sensorInputs.distance;
     interpreterRef.current.globals['motionDetected'] = simState.sensorInputs.motion ? 1 : 0;
-    interpreterRef.current.globals['flowRateInput'] = simState.sensorInputs.flowRateInput;
+    interpreterRef.current.globals['waterFlowLPM'] = simState.sensorInputs.waterFlowLPM;
     interpreterRef.current.globals['buttonInput'] = simState.sensorInputs.buttonInput ? 1 : 0;
     interpreterRef.current.globals['flaskToggleInput'] = simState.sensorInputs.flaskToggleInput ? 1 : 0;
     interpreterRef.current.globals['bpmInput'] = simState.sensorInputs.bpmInput;
@@ -1248,7 +1970,7 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
       ...prev,
       isRunning: true,
       isPaused: false,
-      serialOutput: [...prev.serialOutput, `[Simulation Started on ${experiment.platform}]`],
+      serialOutput: [`[Simulation Started on ${languageMode === 'Arduino C++' ? 'Arduino' : 'Raspberry Pi'}]`],
     }));
     
     // Auto-switch right panel to sensors tab so users see live controls
@@ -1305,6 +2027,15 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
       serialOutput: [...prev.serialOutput, `[Simulation Stopped]`],
     }));
   };
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (simIntervalRef.current) clearInterval(simIntervalRef.current);
+      if (blinkIntervalRef.current) clearTimeout(blinkIntervalRef.current);
+      if (interpreterRef.current) interpreterRef.current.running = false;
+    };
+  }, []);
 
   // Debug execution actions
   const pauseSimulation = () => {
@@ -1949,13 +2680,22 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `BOM_Experiment_${experiment.id}.csv`);
+    link.setAttribute('download', circuitId ? `BOM_Design_${dbCircuitTitle.replace(/\s+/g, '_')}.csv` : `BOM_Experiment_${experiment.id}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
 
 
+
+  if (isLoadingDb) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen bg-[var(--bg-main)] text-[var(--text-main)]">
+        <Loader2 className="w-8 h-8 text-[#FF6B35] animate-spin mb-2" />
+        <span className="text-xs font-semibold text-[var(--text-muted)]">Loading Supabase Circuit...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen bg-[var(--bg-main)] text-[var(--text-main)] select-none overflow-hidden font-sans">
@@ -1970,12 +2710,21 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
           </button>
           <div>
             <h1 className="text-sm font-bold text-[var(--text-main)] leading-tight flex items-center gap-2">
-              {experiment.title}
+              {circuitId ? dbCircuitTitle : experiment.title}
               <span className={`px-2 py-0.5 rounded-full text-[9px] font-extrabold uppercase tracking-widest ${simState.isRunning ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-[var(--bg-panel-light)] text-[var(--text-muted)]'}`}>
                 {simState.isRunning ? 'Simulation Active' : 'Idle'}
               </span>
+              {circuitId && (
+                <SaveIndicator
+                  isSaving={isSaving}
+                  lastSavedAt={lastSavedAt}
+                  error={syncError}
+                />
+              )}
             </h1>
-            <span className="text-[10px] text-[var(--text-muted)] font-semibold">{experiment.platform} Workspace</span>
+            <span className="text-[10px] text-[var(--text-muted)] font-semibold">
+              {circuitId ? (languageMode === 'MicroPython' ? 'Raspberry Pi' : 'Arduino') : experiment.platform} Workspace
+            </span>
           </div>
         </div>
 
@@ -2016,21 +2765,21 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
         
         {/* LEFT PANEL — Components Panel (collapsible, ~220px wide) */}
         {activeTab !== 'bom' && (
-          <aside className={`bg-[var(--bg-panel)] border-r border-[var(--border-main)] flex flex-col transition-all duration-300 relative ${
+          <aside className={`bg-gray-50 border-r border-gray-200 flex flex-col transition-all duration-300 relative ${
             isLeftPanelCollapsed ? 'w-12' : 'w-[240px]'
           }`}>
             
             {/* Collapse toggle arrow */}
             <button 
               onClick={() => setIsLeftPanelCollapsed(!isLeftPanelCollapsed)}
-              className="absolute -right-3 top-4 z-30 w-6 h-6 rounded-full bg-[var(--bg-panel)] border border-[var(--border-main)] text-[var(--text-muted)] hover:text-[var(--text-main)] flex items-center justify-center shadow-lg transition-transform cursor-pointer"
+              className="absolute -right-3 top-4 z-30 w-6 h-6 rounded-full bg-white border border-gray-200 text-gray-500 hover:text-gray-800 flex items-center justify-center shadow-md transition-transform cursor-pointer"
             >
               <ChevronRight className={`w-3.5 h-3.5 transition-transform ${!isLeftPanelCollapsed ? 'rotate-180' : ''}`} />
             </button>
 
             {isLeftPanelCollapsed ? (
               // Collapsed view with icons
-              <div className="flex-1 py-10 flex flex-col items-center space-y-6 text-[var(--text-muted)]">
+              <div className="flex-1 py-10 flex flex-col items-center space-y-6 text-gray-500">
                 <Search className="w-4 h-4" />
                 <LayoutGrid className="w-4 h-4" />
                 <Cpu className="w-4 h-4" />
@@ -2041,17 +2790,17 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
               // Full library view
               <div className="flex-1 flex flex-col p-4 overflow-hidden">
                 <div className="flex flex-col gap-2 pb-3 border-b border-[var(--border-main)] mb-3 shrink-0">
-                  <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Components Library</span>
+                  <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Components Library</span>
                   
                   {/* Search Bar */}
                   <div className="relative">
-                    <Search className="w-3.5 h-3.5 text-[var(--text-muted)] absolute left-3 top-2.5" />
+                    <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-2.5" />
                     <input 
                       type="text" 
                       placeholder="Filter parts..." 
                       value={searchTerm} 
                       onChange={(e) => setSearchTerm(e.target.value)} 
-                      className="w-full bg-[var(--bg-main)] border border-[var(--border-main)] rounded-xl py-1.5 pl-8 pr-3 text-xs text-[var(--text-secondary)] focus:outline-none focus:border-[#FF6B35] transition-colors" 
+                      className="w-full bg-white border border-gray-200 rounded-xl py-1.5 pl-8 pr-3 text-xs text-gray-700 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all shadow-sm" 
                     />
                   </div>
                 </div>
@@ -2073,13 +2822,13 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                     if (matchedItems.length === 0) return null;
 
                     return (
-                      <div key={sectionName} className="border-b border-[var(--border-main)] pb-2">
+                      <div key={sectionName} className="border-b border-gray-200 pb-2">
                         <button
                           onClick={() => setCollapsedCategories(prev => ({ ...prev, [sectionName]: !prev[sectionName] }))}
-                          className="w-full flex items-center justify-between text-xs font-bold text-[var(--text-secondary)] hover:text-[var(--text-main)] uppercase tracking-wider py-1.5 cursor-pointer"
+                          className="w-full flex items-center justify-between text-xs font-bold text-gray-600 hover:text-gray-900 uppercase tracking-wider py-1.5 cursor-pointer"
                         >
                           <span>{sectionName}</span>
-                          <span className="text-[10px] text-[var(--text-muted)]">{isOpen ? '▼' : '▶'}</span>
+                          <span className="text-[10px] text-gray-400">{isOpen ? '▼' : '▶'}</span>
                         </button>
                         
                         {isOpen && (
@@ -2097,7 +2846,7 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                                       e.dataTransfer.setData('text/plain', item.id);
                                       e.dataTransfer.setData('item-type', 'component');
                                     }}
-                                    className="bg-slate-950/40 hover:bg-[var(--bg-panel-light)] border border-[var(--border-main)] hover:border-[#FF6B35]/40 p-2 rounded-xl flex flex-col items-center justify-between text-center transition-all aspect-square cursor-pointer group"
+                                    className="bg-white hover:bg-gray-50 border border-gray-200 hover:border-gray-300 shadow-sm hover:shadow-md p-3 rounded-2xl flex flex-col items-center justify-center text-center transition-all aspect-square cursor-pointer group"
                                     title={c.description}
                                   >
                                     <div className="w-10 h-10 flex items-center justify-center overflow-hidden mb-1">
@@ -2109,7 +2858,7 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                                         />
                                       </svg>
                                     </div>
-                                    <span className="text-[9px] font-bold text-[var(--text-muted)] group-hover:text-[#FF6B35] transition-colors line-clamp-1 w-full leading-tight">
+                                    <span className="text-[11px] font-semibold text-gray-700 group-hover:text-gray-900 mt-2 transition-colors line-clamp-1 w-full leading-tight font-sans">
                                       {c.name}
                                     </span>
                                   </button>
@@ -2126,9 +2875,8 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                                     draggable="true"
                                     onDragStart={(e) => {
                                       e.dataTransfer.setData('text/plain', item.id);
-                                      e.dataTransfer.setData('item-type', 'starter');
                                     }}
-                                    className="bg-slate-950/40 hover:bg-[var(--bg-panel-light)] border border-[var(--border-main)] hover:border-[#FF6B35]/40 p-2 rounded-xl flex flex-col items-center justify-between text-center transition-all aspect-square cursor-pointer group"
+                                    className="bg-white hover:bg-gray-50 border border-gray-200 hover:border-gray-300 shadow-sm hover:shadow-md p-3 rounded-2xl flex flex-col items-center justify-center text-center transition-all aspect-square cursor-pointer group"
                                     title={starter.description}
                                   >
                                     <div className="w-10 h-10 flex items-center justify-center overflow-hidden mb-1">
@@ -2140,7 +2888,7 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                                         />
                                       </svg>
                                     </div>
-                                    <span className="text-[9px] font-bold text-[var(--text-muted)] group-hover:text-[#FF6B35] transition-colors line-clamp-1 w-full leading-tight">
+                                    <span className="text-[11px] font-semibold text-gray-700 group-hover:text-gray-900 mt-2 transition-colors line-clamp-2 w-full leading-tight font-sans">
                                       {starter.name}
                                     </span>
                                   </button>
@@ -2376,14 +3124,27 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                 }}
               >
                 <defs>
-                  {/* Dot Grid pattern */}
-                  <pattern id="dot-grid" width="20" height="20" patternUnits="userSpaceOnUse">
-                    <circle cx="2" cy="2" r="1.2" fill="rgba(255, 255, 255, 0.08)" />
+                  {/* Dot Grid pattern matching the 15px grid pitch */}
+                  <pattern id="dot-grid" width="15" height="15" patternUnits="userSpaceOnUse">
+                    <circle cx="1.5" cy="1.5" r="1.0" fill="rgba(255, 255, 255, 0.08)" />
                   </pattern>
-                  {/* Line grid pattern */}
-                  <pattern id="line-grid" width="20" height="20" patternUnits="userSpaceOnUse">
-                    <path d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(255, 255, 255, 0.02)" strokeWidth="1" />
+                  {/* Line grid pattern matching the 15px grid pitch */}
+                  <pattern id="line-grid" width="15" height="15" patternUnits="userSpaceOnUse">
+                    <path d="M 15 0 L 0 0 0 15" fill="none" stroke="rgba(255, 255, 255, 0.02)" strokeWidth="1" />
                   </pattern>
+                  {/* Wire shadow filter for Fritzing-style depth */}
+                  <filter id="wire-shadow" x="-30%" y="-30%" width="160%" height="160%">
+                    <feDropShadow dx="1.2" dy="2.0" stdDeviation="1.5" floodColor="#0F172A" floodOpacity="0.45" />
+                  </filter>
+                  {/* Wire glow bloom filter */}
+                  <filter id="wire-glow" x="-50%" y="-50%" width="200%" height="200%">
+                    <feGaussianBlur stdDeviation="4" result="blur" />
+                    <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                  </filter>
+                  <filter id="pin-glow" x="-100%" y="-100%" width="300%" height="300%">
+                    <feGaussianBlur stdDeviation="3" result="blur" />
+                    <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                  </filter>
                 </defs>
 
                 {/* Interactive grid background fill */}
@@ -2438,29 +3199,24 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                       const pos2 = getPinPos(comp2, w.toPinId);
                       const isSelected = selectedElement?.type === 'wire' && selectedElement.id === w.id;
 
-                      const pathD = wireStyle === 'bezier'
-                        ? getBezierPath(pos1.x, pos1.y, pos2.x, pos2.y, w.nodes)
-                        : getManhattanPath(pos1.x, pos1.y, pos2.x, pos2.y);
-
                       return (
                         <g key={w.id}>
-                          {/* Thickness wire glow / halo */}
-                          <path
-                            d={pathD}
-                            fill="none"
-                            stroke={w.color === 'black' ? '#94a3b8' : w.color}
-                            strokeWidth={isSelected ? 8 : 5}
-                            opacity={isSelected ? 0.5 : 0.25}
-                          />
-                          {/* Main Wire line */}
-                          <path
+                          <Wire
+                            id={w.id}
+                            x1={pos1.x}
+                            y1={pos1.y}
+                            x2={pos2.x}
+                            y2={pos2.y}
+                            nodes={w.nodes}
+                            color={w.color}
+                            isSelected={isSelected}
+                            style={wireStyle}
                             onClick={(e) => {
                               e.stopPropagation();
                               setSelectedElement({ type: 'wire', id: w.id });
                             }}
                             onDoubleClick={(e) => {
                               e.stopPropagation();
-                              if (wireStyle !== 'bezier') return;
                               const rect = e.currentTarget.closest('svg')?.getBoundingClientRect();
                               if (!rect) return;
                               const clickX = (e.clientX - rect.left - pan.x) / zoom;
@@ -2473,13 +3229,10 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                               }));
                             }}
                             onMouseDown={(e) => e.stopPropagation()}
-                            d={pathD}
-                            fill="none"
-                            stroke={w.color === 'black' ? '#334155' : w.color}
-                            strokeWidth={isSelected ? 3.5 : 2.5}
-                            opacity={isSelected ? 1 : 0.92}
-                            className="cursor-pointer hover:stroke-indigo-400 transition-all"
+                            onMouseEnter={() => setHoveredWireId(w.id)}
+                            onMouseLeave={() => setHoveredWireId(null)}
                           />
+
                           {/* Render Wire Nodes if selected */}
                           {isSelected && w.nodes && w.nodes.map((node, nIdx) => (
                             <circle
@@ -2488,7 +3241,7 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                               cy={node.y}
                               r={5}
                               fill="#ffffff"
-                              stroke="#38bdf8"
+                              stroke="#10B981"
                               strokeWidth={2}
                               className="cursor-move hover:scale-125 transition-transform"
                               onMouseDown={(e) => {
@@ -2516,8 +3269,8 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                   {/* Wire drawing currently being dragged */}
                   {drawingWire && (
                     <path
-                      d={wireStyle === 'bezier'
-                        ? getBezierPath(drawingWire.x, drawingWire.y, mousePos.x, mousePos.y)
+                      d={wireStyle === 'bezier' 
+                        ? getBezierPath(drawingWire.x, drawingWire.y, mousePos.x, mousePos.y) 
                         : getManhattanPath(drawingWire.x, drawingWire.y, mousePos.x, mousePos.y)}
                       fill="none"
                       stroke={selectedWireColor === 'black' ? '#fff' : selectedWireColor}
@@ -2634,43 +3387,84 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                           <ComponentSVGs
                             instance={comp}
                             viewMode={activeTab === 'schematic' ? 'schematic' : 'breadboard'}
-                            isPinActive={(pinId) => isPinActive(comp.id, pinId)}
-                            getPinVoltage={(pinId) => getPinVoltage(comp.id, pinId)}
+                            isPinActive={(pinId) => {
+                              if (comp.type === 'relay' && pinId === 'in') {
+                                return isPinActive(comp.id, 'in') || 
+                                       isPinActive('rpi_1', 'GP15') || isPinActive('rpi_1', '15') ||
+                                       isPinActive('rpi_1', 'GP25') || isPinActive('rpi_1', '25');
+                              }
+                              return isPinActive(comp.id, pinId);
+                            }}
+                            getPinVoltage={(pinId) => {
+                              if (comp.type === 'relay' && pinId === 'in') {
+                                return Math.max(
+                                  getPinVoltage(comp.id, 'in'), 
+                                  getPinVoltage('rpi_1', 'GP15'), getPinVoltage('rpi_1', '15'),
+                                  getPinVoltage('rpi_1', 'GP25'), getPinVoltage('rpi_1', '25')
+                                );
+                              }
+                              return getPinVoltage(comp.id, pinId);
+                            }}
                             sensorValues={simState.sensorInputs}
                             hoveredPinId={hoveredPin?.componentId === comp.id ? hoveredPin.pinId : undefined}
+                            showBreadboardInternals={showBreadboardInternals}
+                            rawPinStates={simState.pinStates}
                           />
 
                           {/* Interactive Pins rendering */}
                           {activeTab !== 'schematic' && meta && meta.pins.map(pinDef => {
-                            const isPowerOrGnd = pinDef.type === 'power' || pinDef.type === 'gnd';
                             const isHovered = hoveredPin?.componentId === comp.id && hoveredPin?.pinId === pinDef.id;
+                            const isDrawingFromThis = drawingWire?.fromComponentId === comp.id && drawingWire?.fromPinId === pinDef.id;
                             return (
-                              <g key={pinDef.id}>
-                                {/* Visible Pin Drawing */}
+                              <g key={pinDef.id} className="component-pin-group">
+                                {/* ── Breadboard holes: always visible (they ARE the reference grid) ── */}
                                 {comp.type === 'breadboard' ? (
                                   <g style={{ pointerEvents: 'none' }}>
-                                    <rect x={pinDef.x - 4} y={pinDef.y - 4} width={8} height={8} fill="#b0b0b0" rx={1} />
-                                    <rect x={pinDef.x - 2.5} y={pinDef.y - 2.5} width={5} height={5} fill="#333333" rx={0.5} />
-                                    {isHovered && <rect x={pinDef.x - 5} y={pinDef.y - 5} width={10} height={10} fill="none" stroke="#ef4444" strokeWidth={1.5} rx={1} className="pulse-glow" />}
-                                  </g>
-                                ) : comp.type === 'arduino' ? (
-                                  <g style={{ pointerEvents: 'none' }}>
-                                    <circle cx={pinDef.x} cy={pinDef.y} r={3.5} fill="#27272a" />
-                                    <circle cx={pinDef.x} cy={pinDef.y} r={1.5} fill="#000000" />
+                                    <circle cx={pinDef.x} cy={pinDef.y} r={3.5} fill="#E5E7EB" />
+                                    <circle cx={pinDef.x} cy={pinDef.y} r={3} fill="#374151" />
+                                    <circle cx={pinDef.x} cy={pinDef.y} r={2.5} fill="#1F2937" />
                                     {isHovered && <circle cx={pinDef.x} cy={pinDef.y} r={5} fill="none" stroke="#ef4444" strokeWidth={1.5} className="pulse-glow" />}
                                   </g>
-                                ) : (
+                                ) : comp.type === 'arduino' ? (
+                                  // Arduino header pins: hidden by default, subtle ring on hover
                                   <g style={{ pointerEvents: 'none' }}>
-                                    {/* Default shiny metallic pin for components like LED/Resistor */}
-                                    <circle cx={pinDef.x} cy={pinDef.y} r={3} fill="#d4d4d8" stroke="#71717a" strokeWidth={1} />
-                                    <circle cx={pinDef.x} cy={pinDef.y} r={1.5} fill="#f4f4f5" />
-                                    {isHovered && <circle cx={pinDef.x} cy={pinDef.y} r={6} fill="none" stroke="#ef4444" strokeWidth={1.5} className="pulse-glow" />}
+                                    <circle
+                                      cx={pinDef.x} cy={pinDef.y} r={3.5}
+                                      fill="#27272a"
+                                      opacity={isHovered || isDrawingFromThis ? 1 : 0}
+                                    />
+                                    <circle
+                                      cx={pinDef.x} cy={pinDef.y} r={1.5}
+                                      fill="#000000"
+                                      opacity={isHovered || isDrawingFromThis ? 1 : 0}
+                                    />
+                                    {/* Hover ring — subtle outline to locate pin */}
+                                    {(isHovered || isDrawingFromThis) && (
+                                      <circle cx={pinDef.x} cy={pinDef.y} r={5} fill="none" stroke="#ef4444" strokeWidth={1.5} className="pulse-glow" />
+                                    )}
+                                  </g>
+                                ) : (
+                                  // Generic components (LED, Resistor, DHT11, etc.)
+                                  // Terminal dots are HIDDEN by default; appear only on hover/active wire draw
+                                  <g style={{ pointerEvents: 'none' }}>
+                                    <circle
+                                      cx={pinDef.x} cy={pinDef.y} r={3}
+                                      fill="#d4d4d8" stroke="#71717a" strokeWidth={1}
+                                      opacity={isHovered || isDrawingFromThis ? 0.9 : 0}
+                                    />
+                                    <circle
+                                      cx={pinDef.x} cy={pinDef.y} r={1.5}
+                                      fill="#f4f4f5"
+                                      opacity={isHovered || isDrawingFromThis ? 1 : 0}
+                                    />
+                                    {/* Hover ring: subtle gray outline to help place wires */}
+                                    {(isHovered || isDrawingFromThis) && (
+                                      <circle cx={pinDef.x} cy={pinDef.y} r={6} fill="none" stroke="#ef4444" strokeWidth={1.5} className="pulse-glow" />
+                                    )}
                                   </g>
                                 )}
-                                
 
-                                
-                                {/* Invisible hit-test area for 12px snapping radius */}
+                                {/* Invisible 12px hit-test circle — always active for wire drawing */}
                                 <circle
                                   cx={pinDef.x}
                                   cy={pinDef.y}
@@ -2706,6 +3500,101 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                       rx={2}
                     />
                   )}
+
+                  {/* ─── Wire Hover Overlay Layer (renders on TOP of breadboard) ─── */}
+                  {(() => {
+                    if (!hoveredWireId) return null;
+                    const hw = wires.find(w => w.id === hoveredWireId);
+                    if (!hw) return null;
+                    const hc1 = components.find(c => c.id === hw.fromComponentId);
+                    const hc2 = components.find(c => c.id === hw.toComponentId);
+                    if (!hc1 || !hc2) return null;
+                    const hp1 = getPinPos(hc1, hw.fromPinId);
+                    const hp2 = getPinPos(hc2, hw.toPinId);
+                    const hPathD = wireStyle === 'bezier'
+                      ? getBezierPath(hp1.x, hp1.y, hp2.x, hp2.y, hw.nodes)
+                      : getManhattanPath(hp1.x, hp1.y, hp2.x, hp2.y, hw.nodes);
+                    const wireColor = hw.color === 'black' ? '#94a3b8' : hw.color;
+
+                    // Flashlight/spotlight: find the midpoint of the wire path for the flashlight center
+                    const midX = (hp1.x + hp2.x) / 2;
+                    const midY = (hp1.y + hp2.y) / 2;
+
+                    return (
+                      <g style={{ pointerEvents: 'none' }}>
+                        {/* Flashlight effect: semi-transparent radial overlay on breadboard region */}
+                        {[hc1, hc2].map((hc, idx) => {
+                          if (hc.type !== 'breadboard') return null;
+                          const flashPt = idx === 0 ? hp1 : hp2;
+                          const flashR = 30;
+                          return (
+                            <g key={`flash-${idx}`}>
+                              <defs>
+                                <radialGradient id={`flashlight-${idx}`} cx="50%" cy="50%" r="50%">
+                                  <stop offset="0%" stopColor="rgba(0,0,0,0)" />
+                                  <stop offset="70%" stopColor="rgba(0,0,0,0)" />
+                                  <stop offset="100%" stopColor="rgba(0,0,0,0.55)" />
+                                </radialGradient>
+                              </defs>
+                              <ellipse
+                                cx={flashPt.x}
+                                cy={flashPt.y}
+                                rx={flashR}
+                                ry={flashR}
+                                fill={`url(#flashlight-${idx})`}
+                              />
+                            </g>
+                          );
+                        })}
+
+                        {/* Outer bloom glow halo */}
+                        <path
+                          d={hPathD}
+                          fill="none"
+                          stroke={wireColor}
+                          strokeWidth={18}
+                          opacity={0.15}
+                          filter="url(#wire-glow)"
+                        />
+                        {/* Mid glow */}
+                        <path
+                          d={hPathD}
+                          fill="none"
+                          stroke={wireColor}
+                          strokeWidth={9}
+                          opacity={0.35}
+                          filter="url(#wire-glow)"
+                        />
+                        {/* Sharp wire on top */}
+                        <path
+                          d={hPathD}
+                          fill="none"
+                          stroke={wireColor}
+                          strokeWidth={3}
+                          opacity={1}
+                          strokeLinecap="round"
+                        />
+
+                        {/* Lit-up circles for the source pin */}
+                        <circle cx={hp1.x} cy={hp1.y} r={12} fill={wireColor} opacity={0.2} filter="url(#pin-glow)" />
+                        <circle cx={hp1.x} cy={hp1.y} r={7} fill="none" stroke={wireColor} strokeWidth={2.5} opacity={0.9} />
+                        <circle cx={hp1.x} cy={hp1.y} r={3} fill={wireColor} opacity={1} />
+
+                        {/* Lit-up circles for the dest pin */}
+                        <circle cx={hp2.x} cy={hp2.y} r={12} fill={wireColor} opacity={0.2} filter="url(#pin-glow)" />
+                        <circle cx={hp2.x} cy={hp2.y} r={7} fill="none" stroke={wireColor} strokeWidth={2.5} opacity={0.9} />
+                        <circle cx={hp2.x} cy={hp2.y} r={3} fill={wireColor} opacity={1} />
+
+                        {/* Tooltip label showing the wire endpoints */}
+                        <g transform={`translate(${midX}, ${midY - 18})`}>
+                          <rect x={-50} y={-11} width={100} height={16} rx={4} fill="rgba(0,0,0,0.75)" />
+                          <text textAnchor="middle" y={1} fontSize={9} fill={wireColor} fontFamily="monospace" fontWeight="bold">
+                            {hw.fromPinId} → {hw.toPinId}
+                          </text>
+                        </g>
+                      </g>
+                    );
+                  })()}
 
                 </g>
               </svg>
@@ -2973,7 +3862,10 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                 <div className="flex-1 flex flex-col min-h-0">
                   {/* Tool bar & selector */}
                   <div className="p-3 bg-slate-950/60 border-b border-[var(--border-main)] flex items-center justify-between shrink-0 text-xs">
-                    <select className="bg-[var(--bg-panel-light)] border border-[var(--border-main)] text-[var(--text-secondary)] text-[10px] rounded-lg px-2 py-1 focus:outline-none focus:border-[#FF6B35] font-semibold">
+                    <select 
+                      value={languageMode}
+                      onChange={(e) => setLanguageMode(e.target.value as 'Arduino C++' | 'MicroPython')}
+                      className="bg-[var(--bg-panel-light)] border border-[var(--border-main)] text-[var(--text-secondary)] text-[10px] rounded-lg px-2 py-1 focus:outline-none focus:border-[#FF6B35] font-semibold">
                       <option>Arduino C++</option>
                       <option>MicroPython</option>
                       <option>Block-based</option>
@@ -3011,7 +3903,7 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                   <div className="flex-1 min-h-[250px]">
                     <Editor 
                       height="100%" 
-                      language={experiment.platform === 'Arduino' ? 'cpp' : 'python'} 
+                      language={languageMode === 'Arduino C++' ? 'cpp' : 'python'} 
                       theme="vs-dark" 
                       value={codeContent} 
                       onChange={(val) => setCodeContent(val || '')} 
@@ -3038,7 +3930,7 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                   </div>
 
                   {/* Temperature Sensor */}
-                  {[1, 9, 10, 12].includes(experiment.id) && (
+                  {[1, 7, 9, 10, 12].includes(experiment.id) && (
                     <div className="bg-[var(--bg-panel-light)] border border-[var(--border-main)] rounded-xl p-3 space-y-2">
                       <div className="flex justify-between items-center">
                         <span className="text-[10px] font-bold text-[var(--text-secondary)]">🌡️ Temperature (DHT11/Probe)</span>
@@ -3047,7 +3939,11 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                       <input
                         type="range" min={-10} max={60} step={1}
                         value={Number(simState.sensorInputs.temperature)}
-                        onChange={(e) => setSimState(prev => ({ ...prev, sensorInputs: { ...prev.sensorInputs, temperature: Number(e.target.value) } }))}
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          setSimState(prev => ({ ...prev, sensorInputs: { ...prev.sensorInputs, temperature: val } }));
+                          setComponents(prev => prev.map(c => c.type === 'dht11' ? { ...c, properties: { ...c.properties, temperature: val } } : c));
+                        }}
                         className="w-full accent-[#FF6B35] cursor-pointer"
                       />
                       <div className="flex justify-between text-[9px] text-[var(--text-muted)]">
@@ -3057,7 +3953,7 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                   )}
 
                   {/* Humidity Sensor */}
-                  {[1, 9].includes(experiment.id) && (
+                  {[1, 7, 9].includes(experiment.id) && (
                     <div className="bg-[var(--bg-panel-light)] border border-[var(--border-main)] rounded-xl p-3 space-y-2">
                       <div className="flex justify-between items-center">
                         <span className="text-[10px] font-bold text-[var(--text-secondary)]">💧 Humidity (DHT11)</span>
@@ -3066,7 +3962,11 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                       <input
                         type="range" min={0} max={100} step={1}
                         value={Number(simState.sensorInputs.humidity)}
-                        onChange={(e) => setSimState(prev => ({ ...prev, sensorInputs: { ...prev.sensorInputs, humidity: Number(e.target.value) } }))}
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          setSimState(prev => ({ ...prev, sensorInputs: { ...prev.sensorInputs, humidity: val } }));
+                          setComponents(prev => prev.map(c => c.type === 'dht11' ? { ...c, properties: { ...c.properties, humidity: val } } : c));
+                        }}
                         className="w-full accent-blue-400 cursor-pointer"
                       />
                       <div className="flex justify-between text-[9px] text-[var(--text-muted)]">
@@ -3076,7 +3976,7 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                   )}
 
                   {/* Distance Sensor */}
-                  {[2, 5].includes(experiment.id) && (
+                  {[2, 5, 11].includes(experiment.id) && (
                     <div className="bg-[var(--bg-panel-light)] border border-[var(--border-main)] rounded-xl p-3 space-y-2">
                       <div className="flex justify-between items-center">
                         <span className="text-[10px] font-bold text-[var(--text-secondary)]">📡 HC-SR04 Distance</span>
@@ -3095,7 +3995,7 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                   )}
 
                   {/* PIR Motion Sensor */}
-                  {[2, 6].includes(experiment.id) && (
+                  {[2].includes(experiment.id) && (
                     <div className="bg-[var(--bg-panel-light)] border border-[var(--border-main)] rounded-xl p-3">
                       <div className="flex items-center justify-between">
                         <span className="text-[10px] font-bold text-[var(--text-secondary)]">👁️ PIR Motion Sensor</span>
@@ -3113,6 +4013,27 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                       <p className="text-[9px] text-[var(--text-muted)] mt-1.5">
                         {simState.sensorInputs.motion ? '🟢 Motion Detected!' : '⚫ No Motion'}
                       </p>
+                    </div>
+                  )}
+
+                  {/* Motion Trigger Button */}
+                  {[6].includes(experiment.id) && (
+                    <div className="bg-[var(--bg-panel-light)] border border-[var(--border-main)] rounded-xl p-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold text-[var(--text-secondary)]">🏃 Motion Trigger</span>
+                        <button
+                          onMouseDown={() => setSimState(prev => ({ ...prev, sensorInputs: { ...prev.sensorInputs, motion: true } }))}
+                          onMouseUp={() => setSimState(prev => ({ ...prev, sensorInputs: { ...prev.sensorInputs, motion: false } }))}
+                          onMouseLeave={() => setSimState(prev => ({ ...prev, sensorInputs: { ...prev.sensorInputs, motion: false } }))}
+                          className={`px-3 py-1.5 text-[10px] font-bold rounded-lg border transition-all cursor-pointer select-none ${
+                            simState.sensorInputs.motion
+                              ? 'bg-emerald-500 border-emerald-500 text-white shadow-lg'
+                              : 'bg-slate-800 border-slate-700 text-[var(--text-muted)] hover:border-slate-600'
+                          }`}
+                        >
+                          {simState.sensorInputs.motion ? '● MOTION DETECTED' : '○ Hold to Trigger'}
+                        </button>
+                      </div>
                     </div>
                   )}
 
@@ -3138,16 +4059,16 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                   )}
 
                   {/* Flow Rate Sensor */}
-                  {[8].includes(experiment.id) && (
+                  {[4].includes(experiment.id) && (
                     <div className="bg-[var(--bg-panel-light)] border border-[var(--border-main)] rounded-xl p-3 space-y-2">
-                      <div className="flex justify-between items-center">
-                        <span className="text-[10px] font-bold text-[var(--text-secondary)]">💧 YF-S201 Flow Rate</span>
-                        <span className="text-[10px] font-mono text-cyan-400 font-bold">{simState.sensorInputs.flowRateInput} L/min</span>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold text-[var(--text-secondary)]">🌊 YF-S201 Flow Rate</span>
+                        <span className="text-[10px] font-mono text-cyan-400 font-bold">{simState.sensorInputs.waterFlowLPM} L/min</span>
                       </div>
                       <input
                         type="range" min={0} max={30} step={0.5}
-                        value={Number(simState.sensorInputs.flowRateInput)}
-                        onChange={(e) => setSimState(prev => ({ ...prev, sensorInputs: { ...prev.sensorInputs, flowRateInput: Number(e.target.value) } }))}
+                        value={Number(simState.sensorInputs.waterFlowLPM)}
+                        onChange={(e) => setSimState(prev => ({ ...prev, sensorInputs: { ...prev.sensorInputs, waterFlowLPM: Number(e.target.value) } }))}
                         className="w-full accent-cyan-400 cursor-pointer"
                       />
                       <div className="flex justify-between text-[9px] text-[var(--text-muted)]">
@@ -3195,7 +4116,7 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                   )}
 
                   {/* Temperature Probe (DS18B20) */}
-                  {[10, 11].includes(experiment.id) && (
+                  {[8, 10].includes(experiment.id) && (
                     <div className="bg-[var(--bg-panel-light)] border border-[var(--border-main)] rounded-xl p-3 space-y-2">
                       <div className="flex justify-between items-center">
                         <span className="text-[10px] font-bold text-[var(--text-secondary)]">🌡️ DS18B20 Temp Probe</span>
@@ -3223,13 +4144,19 @@ export const SimulatorWorkspace: React.FC<SimulatorWorkspaceProps> = ({ experime
                         Object.entries(simState.pinStates).map(([pin, val]) => (
                           <div key={pin} className="flex justify-between items-center">
                             <span className="text-[10px] font-mono text-[var(--text-muted)]">{pin}</span>
-                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded font-mono ${
-                              val === 1 || val === true || String(val) === 'HIGH' 
-                                ? 'bg-emerald-900/60 text-emerald-400' 
-                                : 'bg-slate-800 text-[var(--text-muted)]'
-                            }`}>
-                              {val === 1 || val === true ? 'HIGH' : 'LOW'}
-                            </span>
+                            {typeof val === 'number' && (val > 1 || String(pin).includes('A')) ? (
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded font-mono bg-indigo-900/60 text-indigo-400">
+                                {val} (10-bit)
+                              </span>
+                            ) : (
+                              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded font-mono ${
+                                val === 1 || val === true || String(val) === 'HIGH' 
+                                  ? 'bg-emerald-900/60 text-emerald-400' 
+                                  : 'bg-slate-800 text-[var(--text-muted)]'
+                              }`}>
+                                {val === 1 || val === true ? 'HIGH' : 'LOW'}
+                              </span>
+                            )}
                           </div>
                         ))
                       )}

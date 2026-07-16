@@ -1,17 +1,20 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Cpu, Zap, Mail, Lock, User, AlertCircle } from 'lucide-react';
+import { Zap, Mail, Lock, User, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
 import { HeaderBranding } from './features/HeaderBranding';
-import { useStore } from '../utils/store';
+import { useAuth } from '../utils/useAuth';
 
 export const LandingPage: React.FC = () => {
   const navigate = useNavigate();
-  const login = useStore(state => state.login);
-  const signup = useStore(state => state.signup);
+  const { signIn, signUp, resetPassword, isLoading: authLoading } = useAuth();
 
   // Tabs: 'login' | 'signup'
   const [activeTab, setActiveTab] = useState<'login' | 'signup'>('login');
-  
+
+  // Shared loading & success states
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [successMessage, setSuccessMessage] = useState('');
+
   // Login fields
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -24,22 +27,26 @@ export const LandingPage: React.FC = () => {
   const [signupConfirm, setSignupConfirm] = useState('');
   const [signupError, setSignupError] = useState('');
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setLoginError('');
     if (!loginEmail || !loginPassword) {
       setLoginError('Please fill in all fields.');
       return;
     }
-    if (loginPassword.length < 6) {
-      setLoginError('Password must be at least 6 characters.');
+    setIsSubmitting(true);
+    const { error } = await signIn(loginEmail, loginPassword);
+    setIsSubmitting(false);
+    if (error) {
+      setLoginError(error);
       return;
     }
-    login(loginEmail);
     navigate('/dashboard');
   };
 
-  const handleSignupSubmit = (e: React.FormEvent) => {
+  const handleSignupSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSignupError('');
     if (!signupName || !signupEmail || !signupPassword || !signupConfirm) {
       setSignupError('Please fill in all fields.');
       return;
@@ -52,9 +59,43 @@ export const LandingPage: React.FC = () => {
       setSignupError('Password must be at least 6 characters.');
       return;
     }
-    signup(signupName, signupEmail);
-    navigate('/dashboard');
+    setIsSubmitting(true);
+    const { error, needsVerification } = await signUp(signupEmail, signupPassword, signupName);
+    setIsSubmitting(false);
+    if (error) {
+      setSignupError(error);
+      return;
+    }
+    if (needsVerification) {
+      setSuccessMessage(`Account created! Check your inbox at ${signupEmail} to verify your account, then log in.`);
+      setActiveTab('login');
+    } else {
+      navigate('/dashboard');
+    }
   };
+
+  const handleForgotPassword = async () => {
+    if (!loginEmail) {
+      setLoginError('Enter your email address above, then click Forgot Password.');
+      return;
+    }
+    setIsSubmitting(true);
+    const { error } = await resetPassword(loginEmail);
+    setIsSubmitting(false);
+    if (error) {
+      setLoginError(error);
+    } else {
+      setSuccessMessage(`Password reset link sent to ${loginEmail}. Check your inbox.`);
+    }
+  };
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <Loader2 className="w-8 h-8 text-[#FF6B35] animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col relative overflow-hidden font-sans">
@@ -73,8 +114,7 @@ export const LandingPage: React.FC = () => {
           <button 
             onClick={() => {
               setActiveTab('login');
-              const formSection = document.getElementById('auth-section');
-              formSection?.scrollIntoView({ behavior: 'smooth' });
+              document.getElementById('auth-section')?.scrollIntoView({ behavior: 'smooth' });
             }}
             className="px-4 py-2 text-sm font-semibold text-slate-700 hover:text-slate-900 transition-all cursor-pointer"
           >
@@ -83,8 +123,7 @@ export const LandingPage: React.FC = () => {
           <button 
             onClick={() => {
               setActiveTab('signup');
-              const formSection = document.getElementById('auth-section');
-              formSection?.scrollIntoView({ behavior: 'smooth' });
+              document.getElementById('auth-section')?.scrollIntoView({ behavior: 'smooth' });
             }}
             className="ml-3 px-4 py-2 text-sm font-semibold bg-[#FF6B35] hover:bg-[#ff804d] text-slate-900 rounded-xl transition-all shadow-[0_4px_20px_rgba(255,107,53,0.3)] cursor-pointer"
           >
@@ -115,8 +154,7 @@ export const LandingPage: React.FC = () => {
             <button
               onClick={() => {
                 setActiveTab('signup');
-                const formSection = document.getElementById('auth-section');
-                formSection?.scrollIntoView({ behavior: 'smooth' });
+                document.getElementById('auth-section')?.scrollIntoView({ behavior: 'smooth' });
               }}
               className="w-full sm:w-auto px-8 py-3.5 bg-[#FF6B35] hover:bg-[#ff804d] text-slate-900 font-bold rounded-xl transition-all shadow-[0_4px_20px_rgba(255,107,53,0.3)] text-sm cursor-pointer"
             >
@@ -125,8 +163,7 @@ export const LandingPage: React.FC = () => {
             <button
               onClick={() => {
                 setActiveTab('login');
-                const formSection = document.getElementById('auth-section');
-                formSection?.scrollIntoView({ behavior: 'smooth' });
+                document.getElementById('auth-section')?.scrollIntoView({ behavior: 'smooth' });
               }}
               className="w-full sm:w-auto px-8 py-3.5 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 font-bold rounded-xl transition-all text-sm cursor-pointer"
             >
@@ -154,6 +191,14 @@ export const LandingPage: React.FC = () => {
         {/* Right Side: Auth Forms Box */}
         <div id="auth-section" className="w-full max-w-md bg-white/70 border border-slate-300/80 backdrop-blur-md p-8 rounded-3xl shadow-2xl flex flex-col transition-all duration-300">
           
+          {/* Global Success Banner */}
+          {successMessage && (
+            <div className="mb-4 bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 p-3 rounded-xl flex items-start gap-2 text-xs">
+              <CheckCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{successMessage}</span>
+            </div>
+          )}
+
           {/* Tab switches */}
           <div className="flex bg-slate-100/45 p-1 rounded-2xl border border-slate-300 mb-6">
             <button
@@ -161,6 +206,7 @@ export const LandingPage: React.FC = () => {
                 setActiveTab('login');
                 setLoginError('');
                 setSignupError('');
+                setSuccessMessage('');
               }}
               className={`flex-1 py-2.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
                 activeTab === 'login'
@@ -175,6 +221,7 @@ export const LandingPage: React.FC = () => {
                 setActiveTab('signup');
                 setLoginError('');
                 setSignupError('');
+                setSuccessMessage('');
               }}
               className={`flex-1 py-2.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
                 activeTab === 'signup'
@@ -195,7 +242,7 @@ export const LandingPage: React.FC = () => {
               </div>
 
               {loginError && (
-                <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 p-3 rounded-xl flex items-center gap-2 text-xs">
+                <div className="bg-rose-500/10 border border-rose-500/20 text-rose-600 p-3 rounded-xl flex items-center gap-2 text-xs">
                   <AlertCircle className="w-4 h-4 shrink-0" />
                   <span>{loginError}</span>
                 </div>
@@ -230,16 +277,21 @@ export const LandingPage: React.FC = () => {
                   <input type="checkbox" className="rounded border-slate-300 bg-slate-50 text-[#FF6B35] focus:ring-[#FF6B35]" />
                   Remember me
                 </label>
-                <a href="#" onClick={(e) => { e.preventDefault(); setLoginError('Reset link sent to email (Mock).'); }} className="text-[#FF6B35] hover:underline font-semibold">
+                <button
+                  type="button"
+                  onClick={handleForgotPassword}
+                  className="text-[#FF6B35] hover:underline font-semibold cursor-pointer"
+                >
                   Forgot Password?
-                </a>
+                </button>
               </div>
 
               <button
                 type="submit"
-                className="w-full py-3 bg-[#FF6B35] hover:bg-[#ff804d] text-slate-900 font-bold rounded-xl text-xs transition-all shadow-md pt-3 cursor-pointer"
+                disabled={isSubmitting}
+                className="w-full py-3 bg-[#FF6B35] hover:bg-[#ff804d] disabled:opacity-60 text-slate-900 font-bold rounded-xl text-xs transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
               >
-                Log In
+                {isSubmitting ? <><Loader2 className="w-4 h-4 animate-spin" /> Signing In...</> : 'Log In'}
               </button>
             </form>
           ) : (
@@ -250,7 +302,7 @@ export const LandingPage: React.FC = () => {
               </div>
 
               {signupError && (
-                <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 p-3 rounded-xl flex items-center gap-2 text-xs">
+                <div className="bg-rose-500/10 border border-rose-500/20 text-rose-600 p-3 rounded-xl flex items-center gap-2 text-xs">
                   <AlertCircle className="w-4 h-4 shrink-0" />
                   <span>{signupError}</span>
                 </div>
@@ -309,9 +361,10 @@ export const LandingPage: React.FC = () => {
 
               <button
                 type="submit"
-                className="w-full py-3 bg-[#FF6B35] hover:bg-[#ff804d] text-slate-900 font-bold rounded-xl text-xs transition-all shadow-md cursor-pointer"
+                disabled={isSubmitting}
+                className="w-full py-3 bg-[#FF6B35] hover:bg-[#ff804d] disabled:opacity-60 text-slate-900 font-bold rounded-xl text-xs transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
               >
-                Sign Up Free
+                {isSubmitting ? <><Loader2 className="w-4 h-4 animate-spin" /> Creating Account...</> : 'Sign Up Free'}
               </button>
             </form>
           )}

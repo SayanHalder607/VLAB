@@ -1,24 +1,33 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Plus, MoreVertical, Trash2, Copy, Edit3, LogOut, Cpu, LayoutGrid, Eye, CircuitBoard, FolderGit2, Moon, Sun } from 'lucide-react';
+import { Search, Plus, MoreVertical, Trash2, Copy, Edit3, LogOut, Cpu, Eye, CircuitBoard, FolderGit2, Moon, Sun, Lock, Loader2 } from 'lucide-react';
 import { useStore } from '../utils/store';
+import { useAuth } from '../utils/useAuth';
+import { useCircuitSync } from '../utils/useCircuitSync';
 import type { Experiment } from '../types';
+import { EXPERIMENTS } from '../utils/experimentData';
 import { learnTutorials } from '../utils/learnData';
 
 import { HeaderBranding } from './features/HeaderBranding';
-import { LearnModule } from './features/LearnModule';
 import { ExperimentsPanel } from './features/ExperimentsPanel';
 import { SyntaxCodeViewer } from './features/SyntaxCodeViewer';
-import { VisualizationGallery } from './features/VisualizationGallery';
 
+// Set of built-in experiment IDs — these are READ-ONLY templates
+const BUILTIN_IDS = new Set(EXPERIMENTS.map(e => e.id));
 export const Dashboard: React.FC = () => {
   const navigate = useNavigate();
-  const { user, experiments, logout, addExperiment, duplicateExperiment, deleteExperiment, renameExperiment, theme, toggleTheme } = useStore();
+  const { user: supabaseUser, signOut } = useAuth();
+  const { experiments, addExperiment, duplicateExperiment, deleteExperiment, renameExperiment, theme, toggleTheme } = useStore();
+  const { createCircuit, deleteCircuit, renameCircuit, isSaving } = useCircuitSync();
+
+  // Supabase user circuits indexed by UUID string id (stored in localStore as negative IDs or separately)
+  const [supabaseCircuitMap, setSupabaseCircuitMap] = useState<Record<string, string>>({}); // title -> uuid
+  const [dbActionLoading, setDbActionLoading] = useState<string | null>(null); // id of row being acted on
 
   // Search & Navigation Filters
   const [searchTerm, setSearchTerm] = useState('');
   const [activeHeaderTab, setActiveHeaderTab] = useState<'Experiments' | 'Code Blocks' | 'Learn' | 'Classroom'>('Experiments');
-  const [codeBlocksFilter, setCodeBlocksFilter] = useState<'All' | 'Circuits' | '3D Designs' | 'Code Blocks'>('All');
+  const [codeBlocksFilter, ] = useState<'All' | 'Circuits' | '3D Designs' | 'Code Blocks'>('All');
   
   // Track selected experiment for code preview in the Designs tab
   const [selectedPreviewId, setSelectedPreviewId] = useState<number | null>(experiments.length > 0 ? experiments[0].id : null);
@@ -67,6 +76,23 @@ export const Dashboard: React.FC = () => {
     }
     return true; // 'All'
   }), [experiments, codeBlocksFilter]);
+
+  // Filter code block experiments based on search query
+  const filteredCodeBlocks = useMemo(() => {
+    return codeBlocksExperiments.filter(exp => 
+      exp.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      exp.description.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+  }, [codeBlocksExperiments, searchTerm]);
+
+  // Filter Learn tutorials based on search query
+  const filteredLearnTutorials = useMemo(() => {
+    return learnTutorials.filter(tutorial => 
+      tutorial.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      tutorial.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      tutorial.platform.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+  }, [searchTerm]);
 
   // Group experiments into exactly 2 sections
   const groupedExperiments = useMemo(() => {
@@ -120,33 +146,95 @@ export const Dashboard: React.FC = () => {
     }
   ];
 
-  const handleCreateNew = (e: React.FormEvent) => {
+  const handleCreateNew = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim()) return;
-    
-    const type = codeBlocksFilter === '3D Designs' ? '3d' : codeBlocksFilter === 'Code Blocks' ? 'codeblocks' : 'circuits';
+    setDbActionLoading('creating');
+
+    // 1. Create circuit row in Supabase → get UUID
+    const { circuitId, error } = await createCircuit(newTitle.trim());
+
+    if (error || !circuitId) {
+      // Fallback: create locally if Supabase fails
+      console.warn('Supabase create failed, falling back to local:', error);
+      const type = 'circuits';
+      const created = addExperiment(newTitle.trim(), newPlatform, type);
+      setShowCreateModal(false);
+      setNewTitle('');
+      setDbActionLoading(null);
+      navigate(`/simulator/${created.id}`);
+      return;
+    }
+
+    // 2. Also add to local store (as a bridge so existing routing works)
+    const type = 'circuits';
     const created = addExperiment(newTitle.trim(), newPlatform, type);
-    
+
+    // 3. Map local numeric ID → Supabase UUID for later sync
+    setSupabaseCircuitMap(prev => ({ ...prev, [String(created.id)]: circuitId }));
+
     setShowCreateModal(false);
     setNewTitle('');
-    
-    // Navigate straight to simulator
-    navigate(`/simulator/${created.id}`);
+    setDbActionLoading(null);
+
+    // Navigate with UUID so SimulatorWorkspace can auto-save
+    navigate(`/simulator/${circuitId}`);
   };
 
-  const handleRenameSubmit = (e: React.FormEvent) => {
+  const handleRenameSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (renameId && renameTitle.trim()) {
-      renameExperiment(renameId, renameTitle.trim());
-      setRenameId(null);
-      setRenameTitle('');
+    if (!renameId || !renameTitle.trim()) return;
+
+    // Always update locally
+    renameExperiment(renameId, renameTitle.trim());
+
+    // If this is a user-created circuit, also rename in Supabase
+    const uuid = supabaseCircuitMap[String(renameId)];
+    if (uuid) {
+      await renameCircuit(uuid, renameTitle.trim());
     }
+
+    setRenameId(null);
+    setRenameTitle('');
   };
+
+  const handleDeleteExperiment = async (expId: number) => {
+    // Built-in templates cannot be deleted
+    if (BUILTIN_IDS.has(expId)) return;
+
+    setDbActionLoading(String(expId));
+
+    // Delete from local store
+    deleteExperiment(expId);
+
+    // Delete from Supabase if we have the UUID
+    const uuid = supabaseCircuitMap[String(expId)];
+    if (uuid) {
+      await deleteCircuit(uuid);
+      setSupabaseCircuitMap(prev => {
+        const next = { ...prev };
+        delete next[String(expId)];
+        return next;
+      });
+    }
+
+    setDbActionLoading(null);
+    setActiveMenuId(null);
+  };
+
+  // Derive display name from Supabase user
+  const displayName = supabaseUser?.user_metadata?.username
+    || supabaseUser?.email?.split('@')[0]
+    || 'User';
 
   // Get User Initials
   const getInitials = () => {
-    if (!user?.name) return 'U';
-    return user.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+    return displayName.split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2);
+  };
+
+  const handleLogout = async () => {
+    await signOut();
+    navigate('/');
   };
 
   return (
@@ -198,9 +286,9 @@ export const Dashboard: React.FC = () => {
             <div className="w-6 h-6 rounded-full bg-[#FF6B35] text-slate-900 text-[10px] font-extrabold flex items-center justify-center">
               {getInitials()}
             </div>
-            <span className="hidden sm:inline text-xs font-bold text-slate-700 max-w-[80px] truncate">{user?.name}</span>
+            <span className="hidden sm:inline text-xs font-bold text-slate-700 max-w-[80px] truncate">{displayName}</span>
             <button 
-              onClick={() => logout()} 
+              onClick={handleLogout} 
               className="text-slate-600 hover:text-rose-400 transition-colors p-1" 
               title="Sign Out"
             >
@@ -224,16 +312,24 @@ export const Dashboard: React.FC = () => {
             </div>
 
             {/* Search Input bar */}
-            <div className="relative w-full md:w-80">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
-              <input 
-                type="text" 
-                placeholder="Search circuit templates..." 
-                value={searchTerm} 
-                onChange={(e) => setSearchTerm(e.target.value)} 
-                className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl py-2.5 pl-10 pr-4 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:border-[#FF6B35] focus:ring-2 focus:ring-[#FF6B35]/20 transition-all shadow-sm" 
-              />
-            </div>
+            {activeHeaderTab !== 'Classroom' && (
+              <div className="relative w-full md:w-80">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
+                <input 
+                  type="text" 
+                  placeholder={
+                    activeHeaderTab === 'Learn'
+                      ? "Search video tutorials..."
+                      : activeHeaderTab === 'Code Blocks'
+                        ? "Search code templates..."
+                        : "Search circuit templates..."
+                  } 
+                  value={searchTerm} 
+                  onChange={(e) => setSearchTerm(e.target.value)} 
+                  className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl py-2.5 pl-10 pr-4 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:border-[#FF6B35] focus:ring-2 focus:ring-[#FF6B35]/20 transition-all shadow-sm" 
+                />
+              </div>
+            )}
           </div>
 
           {/* Render Sections */}
@@ -285,6 +381,14 @@ export const Dashboard: React.FC = () => {
                           <div className="absolute top-2 left-2 px-2 py-0.5 bg-white/80 backdrop-blur border border-slate-200 text-slate-600 rounded-md text-[8px] font-mono font-bold shadow-sm">
                             ID: {exp.id}
                           </div>
+                          <div 
+                            className="absolute top-2 right-2 px-2 py-0.5 bg-white/80 backdrop-blur border border-slate-200 rounded-md text-[8px] font-bold shadow-sm"
+                            style={{ 
+                              color: exp.difficulty === 'Beginner' ? '#10b981' : exp.difficulty === 'Intermediate' ? '#f59e0b' : '#f43f5e' 
+                            }}
+                          >
+                            {exp.difficulty || 'Beginner'}
+                          </div>
                         </div>
 
                         {/* Card Content Details */}
@@ -311,17 +415,21 @@ export const Dashboard: React.FC = () => {
                                   ref={dropdownRef}
                                   className="absolute right-0 top-7 w-36 bg-white border border-slate-200 rounded-xl shadow-xl z-20 py-1.5 text-xs text-slate-700 flex flex-col overflow-hidden"
                                 >
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setRenameId(exp.id);
-                                      setRenameTitle(exp.title);
-                                      setActiveMenuId(null);
-                                    }}
-                                    className="px-3 py-2 hover:bg-slate-50 hover:text-[#FF6B35] text-left flex items-center gap-2 font-medium"
-                                  >
-                                    <Edit3 className="w-3.5 h-3.5" /> Rename
-                                  </button>
+                                  {/* Rename — only for user circuits */}
+                                  {!BUILTIN_IDS.has(exp.id) && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setRenameId(exp.id);
+                                        setRenameTitle(exp.title);
+                                        setActiveMenuId(null);
+                                      }}
+                                      className="px-3 py-2 hover:bg-slate-50 hover:text-[#FF6B35] text-left flex items-center gap-2 font-medium"
+                                    >
+                                      <Edit3 className="w-3.5 h-3.5" /> Rename
+                                    </button>
+                                  )}
+                                  {/* Duplicate — available for all */}
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation();
@@ -332,17 +440,33 @@ export const Dashboard: React.FC = () => {
                                   >
                                     <Copy className="w-3.5 h-3.5" /> Duplicate
                                   </button>
-                                  <hr className="border-slate-100 my-1" />
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      deleteExperiment(exp.id);
-                                      setActiveMenuId(null);
-                                    }}
-                                    className="px-3 py-2 hover:bg-rose-50 text-rose-600 text-left flex items-center gap-2 font-medium"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" /> Delete
-                                  </button>
+
+                                  {/* Delete — only for user-created circuits, with loading guard */}
+                                  {!BUILTIN_IDS.has(exp.id) && (
+                                    <>
+                                      <hr className="border-slate-100 my-1" />
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleDeleteExperiment(exp.id);
+                                        }}
+                                        disabled={dbActionLoading === String(exp.id)}
+                                        className="px-3 py-2 hover:bg-rose-50 text-rose-600 text-left flex items-center gap-2 font-medium disabled:opacity-50"
+                                      >
+                                        {dbActionLoading === String(exp.id)
+                                          ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                          : <Trash2 className="w-3.5 h-3.5" />}
+                                        Delete
+                                      </button>
+                                    </>
+                                  )}
+
+                                  {/* Lock badge for built-in templates */}
+                                  {BUILTIN_IDS.has(exp.id) && (
+                                    <div className="px-3 py-2 text-slate-400 text-left flex items-center gap-2 font-medium select-none">
+                                      <Lock className="w-3.5 h-3.5" /> Read-Only
+                                    </div>
+                                  )}
                                 </div>
                               )}
                             </div>
@@ -355,11 +479,16 @@ export const Dashboard: React.FC = () => {
 
                         {/* Open & details footer strip */}
                         <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between">
-                          <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">By Admin</span>
+                          {BUILTIN_IDS.has(exp.id)
+                            ? <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1"><Lock className="w-3 h-3" /> Template</span>
+                            : <span className="text-[9px] font-bold uppercase tracking-wider text-emerald-500">My Circuit</span>
+                          }
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              navigate(`/simulator/${exp.id}`);
+                              // User circuits navigated by UUID if mapped, else by numeric id
+                              const uuid = supabaseCircuitMap[String(exp.id)];
+                              navigate(uuid ? `/simulator/${uuid}` : `/simulator/${exp.id}`);
                             }}
                             className={`px-3 py-1.5 bg-slate-50 hover:bg-white border border-slate-200 text-slate-600 font-bold rounded-lg text-[10px] transition-all flex items-center gap-1.5 shadow-sm ${section.hoverBorder}`}
                           >
@@ -402,57 +531,78 @@ export const Dashboard: React.FC = () => {
                 <h2 className="text-2xl font-bold text-slate-800 dark:text-white">Learn Electronics & Coding</h2>
                 <p className="text-slate-500 dark:text-slate-400">Watch comprehensive video tutorials to master virtual circuits.</p>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {/* Embedded YouTube Videos Mapping */}
-                {learnTutorials.map((tutorial, idx) => {
-                  const youtubeId = tutorial.video_url.split('v=')[1]?.split('&')[0];
-                  
-                  return (
-                    <div key={idx} className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm overflow-hidden flex flex-col hover:shadow-lg transition-all group">
-                      <div className="aspect-video bg-slate-100 dark:bg-slate-900 relative">
-                        <iframe 
-                          className="absolute inset-0 w-full h-full"
-                          src={`https://www.youtube.com/embed/${youtubeId}`} 
-                          title={tutorial.title}
-                          frameBorder="0" 
-                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
-                          allowFullScreen
-                        ></iframe>
-                      </div>
-                      <div className="p-5 flex-1 flex flex-col">
-                        <div className="flex items-center justify-between mb-3">
-                          <div className={`inline-flex items-center px-2.5 py-1 text-[10px] font-bold rounded-full ${
-                            tutorial.platform === 'Arduino' 
-                              ? 'bg-[#00979D]/10 text-[#00979D]' 
-                              : tutorial.platform === 'Raspberry Pi'
-                                ? 'bg-[#C51A4A]/10 text-[#C51A4A]'
-                                : 'bg-purple-500/10 text-purple-600'
-                          }`}>
-                            {tutorial.platform}
-                          </div>
-                          <div className="text-[10px] font-semibold text-slate-400">
-                            Exp {tutorial.id}
-                          </div>
+              {filteredLearnTutorials.length === 0 ? (
+                <div className="flex flex-col items-center justify-center p-12 text-center text-slate-500 dark:text-slate-400 border border-dashed border-slate-300 dark:border-slate-700 rounded-2xl bg-white dark:bg-slate-800 shadow-sm max-w-xl mx-auto">
+                  <Search className="w-10 h-10 text-slate-300 dark:text-slate-600 mb-3" />
+                  <h3 className="font-bold text-lg text-slate-700 dark:text-slate-300 mb-1">No matching tutorials found</h3>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">We couldn't find any video tutorials matching "{searchTerm}". Try checking your spelling or using a different keyword.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {/* Embedded YouTube Videos Mapping */}
+                  {filteredLearnTutorials.map((tutorial, idx) => {
+                    const youtubeId = tutorial.video_url.split('v=')[1]?.split('&')[0];
+                    
+                    return (
+                      <div key={idx} className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm overflow-hidden flex flex-col hover:shadow-lg transition-all group">
+                        <div className="aspect-video bg-slate-100 dark:bg-slate-900 relative">
+                          <iframe 
+                            className="absolute inset-0 w-full h-full"
+                            src={`https://www.youtube.com/embed/${youtubeId}`} 
+                            title={tutorial.title}
+                            frameBorder="0" 
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+                            allowFullScreen
+                          ></iframe>
                         </div>
-                        <h3 className="font-bold text-slate-800 dark:text-slate-100 mb-2 leading-snug group-hover:text-[#FF6B35] transition-colors">{tutorial.title}</h3>
-                        <p className="text-xs text-slate-500 dark:text-slate-400 mb-4 flex-1">{tutorial.description}</p>
-                        
-                        <a 
-                          href={tutorial.video_url} 
-                          target="_blank" 
-                          rel="noreferrer"
-                          className="inline-flex items-center justify-center gap-2 w-full py-2 px-4 bg-slate-50 hover:bg-slate-100 dark:bg-slate-700/50 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 transition-colors mt-auto"
-                        >
-                          <svg className="w-4 h-4 text-red-500" fill="currentColor" viewBox="0 0 24 24">
-                            <path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 3.993-8 4.007z" />
-                          </svg>
-                          Watch on YouTube
-                        </a>
+                        <div className="p-5 flex-1 flex flex-col">
+                          <div className="flex items-center justify-between mb-3">
+                            <div className="flex gap-1.5">
+                              <div className={`inline-flex items-center px-2.5 py-1 text-[10px] font-bold rounded-full ${
+                                tutorial.platform === 'Arduino' 
+                                  ? 'bg-[#00979D]/10 text-[#00979D]' 
+                                  : tutorial.platform === 'Raspberry Pi'
+                                    ? 'bg-[#C51A4A]/10 text-[#C51A4A]'
+                                    : 'bg-purple-500/10 text-purple-600'
+                              }`}>
+                                {tutorial.platform}
+                              </div>
+                              {tutorial.difficulty && (
+                                <div 
+                                  className="inline-flex items-center px-2.5 py-1 text-[10px] font-bold rounded-full"
+                                  style={{ 
+                                    backgroundColor: tutorial.difficulty === 'Beginner' ? '#10b98115' : tutorial.difficulty === 'Intermediate' ? '#f59e0b15' : '#f43f5e15',
+                                    color: tutorial.difficulty === 'Beginner' ? '#10b981' : tutorial.difficulty === 'Intermediate' ? '#f59e0b' : '#f43f5e' 
+                                  }}
+                                >
+                                  {tutorial.difficulty}
+                                </div>
+                              )}
+                            </div>
+                            <div className="text-[10px] font-semibold text-slate-400">
+                              Exp {tutorial.id}
+                            </div>
+                          </div>
+                          <h3 className="font-bold text-slate-800 dark:text-slate-100 mb-2 leading-snug group-hover:text-[#FF6B35] transition-colors">{tutorial.title}</h3>
+                          <p className="text-xs text-slate-500 dark:text-slate-400 mb-4 flex-1">{tutorial.description}</p>
+                          
+                          <a 
+                            href={tutorial.video_url} 
+                            target="_blank" 
+                            rel="noreferrer"
+                            className="inline-flex items-center justify-center gap-2 w-full py-2 px-4 bg-slate-50 hover:bg-slate-100 dark:bg-slate-700/50 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 transition-colors mt-auto"
+                          >
+                            <svg className="w-4 h-4 text-red-500" fill="currentColor" viewBox="0 0 24 24">
+                              <path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 3.993-8 4.007z" />
+                            </svg>
+                            Watch on YouTube
+                          </a>
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
 
@@ -494,7 +644,7 @@ export const Dashboard: React.FC = () => {
               <div className="snitch-grid-cols-3 snitch-container">
                 <div>
                   <ExperimentsPanel 
-                    experiments={codeBlocksExperiments.map(exp => ({ id: exp.id, title: exp.title, category: exp.category || 'arduino', difficulty: 'Beginner' }))} 
+                    experiments={filteredCodeBlocks.map(exp => ({ id: exp.id, title: exp.title, category: exp.category || 'arduino', difficulty: exp.difficulty || 'Beginner' }))} 
                     selectedId={selectedPreviewId || undefined}
                     onAddCustomExperiment={() => setShowCreateModal(true)}
                     onSelectExperiment={(id) => setSelectedPreviewId(id as number)}

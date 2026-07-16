@@ -1,4 +1,5 @@
 import React from 'react';
+import { Box, Play } from 'lucide-react';
 
 interface GalleryVideo {
   id: string;
