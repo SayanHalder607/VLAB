@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Search, Plus, MoreVertical, Trash2, Copy, Edit3, LogOut, Cpu, Eye, CircuitBoard, FolderGit2, Moon, Sun, Lock, Loader2 } from 'lucide-react';
 import { useStore } from '../utils/store';
 import { useAuth } from '../utils/useAuth';
-import { useCircuitSync } from '../utils/useCircuitSync';
+import { useCircuitSync } from '../database/useCircuitSync';
 import type { Experiment } from '../types';
 import { EXPERIMENTS } from '../utils/experimentData';
 import { learnTutorials } from '../utils/learnData';

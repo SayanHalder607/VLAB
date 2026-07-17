@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { supabase } from './supabase';
+import { supabase } from '../database/supabaseClient';
 import type { User, Session, AuthError } from '@supabase/supabase-js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────

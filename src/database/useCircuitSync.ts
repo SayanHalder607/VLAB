@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from 'react';
-import { supabase } from './supabase';
-import type { CanvasState, Circuit } from './supabase';
+import { supabase } from './supabaseClient';
+import type { CanvasState, Circuit } from './supabaseClient';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

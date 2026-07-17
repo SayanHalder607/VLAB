@@ -8,7 +8,7 @@ import { ComponentSVGs } from './ComponentSVGs';
 import { CircuitInterpreter } from '../utils/interpreter';
 import { getSchematicDimensions, getSchematicPinCoords, getManhattanPath, getBezierPath } from '../utils/schematicLayout';
 import { Wire } from './features/Wire';
-import { useCircuitSync } from '../utils/useCircuitSync';
+import { useCircuitSync } from '../database/useCircuitSync';
 import { SaveIndicator } from './features/SaveIndicator';
 
 const STARTER_DEFINITIONS: Record<string, { name: string; description: string; type: string; width: number; height: number; defaultProperties: any }> = {
