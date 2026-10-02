@@ -1,101 +1,10 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Zap, Mail, Lock, User, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
+import { Zap } from 'lucide-react';
 import { HeaderBranding } from './features/HeaderBranding';
-import { useAuth } from '../utils/useAuth';
 
 export const LandingPage: React.FC = () => {
   const navigate = useNavigate();
-  const { signIn, signUp, resetPassword, isLoading: authLoading } = useAuth();
-
-  // Tabs: 'login' | 'signup'
-  const [activeTab, setActiveTab] = useState<'login' | 'signup'>('login');
-
-  // Shared loading & success states
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [successMessage, setSuccessMessage] = useState('');
-
-  // Login fields
-  const [loginEmail, setLoginEmail] = useState('');
-  const [loginPassword, setLoginPassword] = useState('');
-  const [loginError, setLoginError] = useState('');
-
-  // Signup fields
-  const [signupName, setSignupName] = useState('');
-  const [signupEmail, setSignupEmail] = useState('');
-  const [signupPassword, setSignupPassword] = useState('');
-  const [signupConfirm, setSignupConfirm] = useState('');
-  const [signupError, setSignupError] = useState('');
-
-  const handleLoginSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoginError('');
-    if (!loginEmail || !loginPassword) {
-      setLoginError('Please fill in all fields.');
-      return;
-    }
-    setIsSubmitting(true);
-    const { error } = await signIn(loginEmail, loginPassword);
-    setIsSubmitting(false);
-    if (error) {
-      setLoginError(error);
-      return;
-    }
-    navigate('/dashboard');
-  };
-
-  const handleSignupSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSignupError('');
-    if (!signupName || !signupEmail || !signupPassword || !signupConfirm) {
-      setSignupError('Please fill in all fields.');
-      return;
-    }
-    if (signupPassword !== signupConfirm) {
-      setSignupError('Passwords do not match.');
-      return;
-    }
-    if (signupPassword.length < 6) {
-      setSignupError('Password must be at least 6 characters.');
-      return;
-    }
-    setIsSubmitting(true);
-    const { error, needsVerification } = await signUp(signupEmail, signupPassword, signupName);
-    setIsSubmitting(false);
-    if (error) {
-      setSignupError(error);
-      return;
-    }
-    if (needsVerification) {
-      setSuccessMessage(`Account created! Check your inbox at ${signupEmail} to verify your account, then log in.`);
-      setActiveTab('login');
-    } else {
-      navigate('/dashboard');
-    }
-  };
-
-  const handleForgotPassword = async () => {
-    if (!loginEmail) {
-      setLoginError('Enter your email address above, then click Forgot Password.');
-      return;
-    }
-    setIsSubmitting(true);
-    const { error } = await resetPassword(loginEmail);
-    setIsSubmitting(false);
-    if (error) {
-      setLoginError(error);
-    } else {
-      setSuccessMessage(`Password reset link sent to ${loginEmail}. Check your inbox.`);
-    }
-  };
-
-  if (authLoading) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <Loader2 className="w-8 h-8 text-[#FF6B35] animate-spin" />
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col relative overflow-hidden font-sans">
@@ -112,22 +21,10 @@ export const LandingPage: React.FC = () => {
         
         <div>
           <button 
-            onClick={() => {
-              setActiveTab('login');
-              document.getElementById('auth-section')?.scrollIntoView({ behavior: 'smooth' });
-            }}
-            className="px-4 py-2 text-sm font-semibold text-slate-700 hover:text-slate-900 transition-all cursor-pointer"
+            onClick={() => navigate('/dashboard')}
+            className="px-4 py-2 text-sm font-semibold bg-[#FF6B35] hover:bg-[#ff804d] text-slate-900 rounded-xl transition-all shadow-[0_4px_20px_rgba(255,107,53,0.3)] cursor-pointer"
           >
-            Log In
-          </button>
-          <button 
-            onClick={() => {
-              setActiveTab('signup');
-              document.getElementById('auth-section')?.scrollIntoView({ behavior: 'smooth' });
-            }}
-            className="ml-3 px-4 py-2 text-sm font-semibold bg-[#FF6B35] hover:bg-[#ff804d] text-slate-900 rounded-xl transition-all shadow-[0_4px_20px_rgba(255,107,53,0.3)] cursor-pointer"
-          >
-            Sign Up
+            Open
           </button>
         </div>
       </header>
@@ -152,22 +49,10 @@ export const LandingPage: React.FC = () => {
 
           <div className="flex flex-col sm:flex-row items-center justify-center lg:justify-start gap-4 pt-4">
             <button
-              onClick={() => {
-                setActiveTab('signup');
-                document.getElementById('auth-section')?.scrollIntoView({ behavior: 'smooth' });
-              }}
+              onClick={() => navigate('/dashboard')}
               className="w-full sm:w-auto px-8 py-3.5 bg-[#FF6B35] hover:bg-[#ff804d] text-slate-900 font-bold rounded-xl transition-all shadow-[0_4px_20px_rgba(255,107,53,0.3)] text-sm cursor-pointer"
             >
-              Sign Up Free
-            </button>
-            <button
-              onClick={() => {
-                setActiveTab('login');
-                document.getElementById('auth-section')?.scrollIntoView({ behavior: 'smooth' });
-              }}
-              className="w-full sm:w-auto px-8 py-3.5 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 font-bold rounded-xl transition-all text-sm cursor-pointer"
-            >
-              Log In to Dashboard
+              Open Dashboard
             </button>
           </div>
 
@@ -188,187 +73,16 @@ export const LandingPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Right Side: Auth Forms Box */}
-        <div id="auth-section" className="w-full max-w-md bg-white/70 border border-slate-300/80 backdrop-blur-md p-8 rounded-3xl shadow-2xl flex flex-col transition-all duration-300">
-          
-          {/* Global Success Banner */}
-          {successMessage && (
-            <div className="mb-4 bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 p-3 rounded-xl flex items-start gap-2 text-xs">
-              <CheckCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{successMessage}</span>
-            </div>
-          )}
-
-          {/* Tab switches */}
-          <div className="flex bg-slate-100/45 p-1 rounded-2xl border border-slate-300 mb-6">
-            <button
-              onClick={() => {
-                setActiveTab('login');
-                setLoginError('');
-                setSignupError('');
-                setSuccessMessage('');
-              }}
-              className={`flex-1 py-2.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
-                activeTab === 'login'
-                  ? 'bg-[#FF6B35] text-slate-900 shadow-md'
-                  : 'text-slate-600 hover:text-slate-800'
-              }`}
-            >
-              Sign In
-            </button>
-            <button
-              onClick={() => {
-                setActiveTab('signup');
-                setLoginError('');
-                setSignupError('');
-                setSuccessMessage('');
-              }}
-              className={`flex-1 py-2.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
-                activeTab === 'signup'
-                  ? 'bg-[#FF6B35] text-slate-900 shadow-md'
-                  : 'text-slate-600 hover:text-slate-800'
-              }`}
-            >
-              Create Account
-            </button>
-          </div>
-
-          {/* Form Content */}
-          {activeTab === 'login' ? (
-            <form onSubmit={handleLoginSubmit} className="space-y-4">
-              <div>
-                <h2 className="text-xl font-bold text-slate-900 mb-1">Welcome back!</h2>
-                <p className="text-xs text-slate-600 mb-4">Log in to continue building your circuit designs.</p>
-              </div>
-
-              {loginError && (
-                <div className="bg-rose-500/10 border border-rose-500/20 text-rose-600 p-3 rounded-xl flex items-center gap-2 text-xs">
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                  <span>{loginError}</span>
-                </div>
-              )}
-
-              <div className="space-y-3.5">
-                <div className="relative">
-                  <Mail className="w-4 h-4 text-slate-500 absolute left-3 top-3.5" />
-                  <input
-                    type="email"
-                    placeholder="Email Address"
-                    value={loginEmail}
-                    onChange={(e) => setLoginEmail(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl py-3 pl-10 pr-4 text-xs text-slate-800 focus:outline-none focus:border-[#FF6B35] transition-colors"
-                  />
-                </div>
-
-                <div className="relative">
-                  <Lock className="w-4 h-4 text-slate-500 absolute left-3 top-3.5" />
-                  <input
-                    type="password"
-                    placeholder="Password"
-                    value={loginPassword}
-                    onChange={(e) => setLoginPassword(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl py-3 pl-10 pr-4 text-xs text-slate-800 focus:outline-none focus:border-[#FF6B35] transition-colors"
-                  />
-                </div>
-              </div>
-
-              <div className="flex justify-between items-center text-[11px] pt-1">
-                <label className="flex items-center gap-1.5 text-slate-600 cursor-pointer">
-                  <input type="checkbox" className="rounded border-slate-300 bg-slate-50 text-[#FF6B35] focus:ring-[#FF6B35]" />
-                  Remember me
-                </label>
-                <button
-                  type="button"
-                  onClick={handleForgotPassword}
-                  className="text-[#FF6B35] hover:underline font-semibold cursor-pointer"
-                >
-                  Forgot Password?
-                </button>
-              </div>
-
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="w-full py-3 bg-[#FF6B35] hover:bg-[#ff804d] disabled:opacity-60 text-slate-900 font-bold rounded-xl text-xs transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
-              >
-                {isSubmitting ? <><Loader2 className="w-4 h-4 animate-spin" /> Signing In...</> : 'Log In'}
-              </button>
-            </form>
-          ) : (
-            <form onSubmit={handleSignupSubmit} className="space-y-4">
-              <div>
-                <h2 className="text-xl font-bold text-slate-900 mb-1">Get Started Free</h2>
-                <p className="text-xs text-slate-600 mb-4">No credit card required. Create circuits in seconds.</p>
-              </div>
-
-              {signupError && (
-                <div className="bg-rose-500/10 border border-rose-500/20 text-rose-600 p-3 rounded-xl flex items-center gap-2 text-xs">
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                  <span>{signupError}</span>
-                </div>
-              )}
-
-              <div className="space-y-3">
-                <div className="relative">
-                  <User className="w-4 h-4 text-slate-500 absolute left-3 top-3.5" />
-                  <input
-                    type="text"
-                    placeholder="Full Name"
-                    value={signupName}
-                    onChange={(e) => setSignupName(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl py-3 pl-10 pr-4 text-xs text-slate-800 focus:outline-none focus:border-[#FF6B35] transition-colors"
-                  />
-                </div>
-
-                <div className="relative">
-                  <Mail className="w-4 h-4 text-slate-500 absolute left-3 top-3.5" />
-                  <input
-                    type="email"
-                    placeholder="Email Address"
-                    value={signupEmail}
-                    onChange={(e) => setSignupEmail(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl py-3 pl-10 pr-4 text-xs text-slate-800 focus:outline-none focus:border-[#FF6B35] transition-colors"
-                  />
-                </div>
-
-                <div className="relative">
-                  <Lock className="w-4 h-4 text-slate-500 absolute left-3 top-3.5" />
-                  <input
-                    type="password"
-                    placeholder="Create Password"
-                    value={signupPassword}
-                    onChange={(e) => setSignupPassword(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl py-3 pl-10 pr-4 text-xs text-slate-800 focus:outline-none focus:border-[#FF6B35] transition-colors"
-                  />
-                </div>
-
-                <div className="relative">
-                  <Lock className="w-4 h-4 text-slate-500 absolute left-3 top-3.5" />
-                  <input
-                    type="password"
-                    placeholder="Confirm Password"
-                    value={signupConfirm}
-                    onChange={(e) => setSignupConfirm(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl py-3 pl-10 pr-4 text-xs text-slate-800 focus:outline-none focus:border-[#FF6B35] transition-colors"
-                  />
-                </div>
-              </div>
-
-              <div className="text-[10px] text-slate-500 text-center leading-normal">
-                By signing up, you agree to our Terms of Service <br />
-                and Privacy Policy.
-              </div>
-
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="w-full py-3 bg-[#FF6B35] hover:bg-[#ff804d] disabled:opacity-60 text-slate-900 font-bold rounded-xl text-xs transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
-              >
-                {isSubmitting ? <><Loader2 className="w-4 h-4 animate-spin" /> Creating Account...</> : 'Sign Up Free'}
-              </button>
-            </form>
-          )}
-
+        {/* Right Side: Open Box */}
+        <div id="auth-section" className="w-full max-w-md bg-white/70 border border-slate-300/80 backdrop-blur-md p-8 rounded-3xl shadow-2xl flex flex-col items-center justify-center transition-all duration-300 min-h-[300px]">
+          <h2 className="text-2xl font-bold text-slate-900 mb-4 text-center">Ready to Start?</h2>
+          <p className="text-sm text-slate-600 mb-8 text-center">Jump right into the simulator without creating an account.</p>
+          <button
+            onClick={() => navigate('/dashboard')}
+            className="w-full py-4 bg-[#FF6B35] hover:bg-[#ff804d] text-slate-900 font-bold rounded-xl text-lg transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
+          >
+            Open Simulator
+          </button>
         </div>
       </main>
 

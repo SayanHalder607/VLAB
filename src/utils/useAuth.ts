@@ -40,6 +40,9 @@ export function useAuth(): UseAuthReturn {
       setSession(session);
       setUser(session?.user ?? null);
       setIsLoading(false);
+    }).catch((error) => {
+      console.error("Failed to restore session:", error);
+      setIsLoading(false);
     });
 
     // Subscribe to auth changes (login, logout, token refresh, etc.)
